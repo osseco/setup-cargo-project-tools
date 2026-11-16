@@ -1,0 +1,4 @@
+test/fixture/target/
+test/fixture/.project-tools/bin/
+test/fixture/.project-tools/targets/
+test/fixture/.project-tools/advisory-db/

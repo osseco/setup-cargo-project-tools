@@ -1,0 +1,78 @@
+name: cargo-project-tools update
+
+# Opens a pull request that adopts a newer cargo-project-tools release.
+#
+# cargo-project-tools' release workflow starts this one with workflow_dispatch
+# after publishing (it needs only Actions: write here). It passes no inputs:
+# the check asks the GitHub API for the latest release itself. The daily
+# schedule catches a missed dispatch.
+#
+# The pull request is opened with a GitHub App token, not GITHUB_TOKEN:
+# pull requests opened with GITHUB_TOKEN don't trigger check.yml, and the
+# repository doesn't allow Actions to open pull requests. The App's commit is
+# signed by GitHub. A maintainer still reviews and merges.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions: {}
+
+concurrency:
+  group: cargo-project-tools-update
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Look for a newer release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/check-cargo-project-tools.sh
+
+  pull-request:
+    needs: check
+    if: needs.check.outputs.version != ''
+    runs-on: ubuntu-latest
+    # Holds the App's private key; deployment branches limited to main (see
+    # TODO.md).
+    environment: update
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Check the release and write the pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: bash scripts/update-cargo-project-tools.sh "$VERSION" --ci
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ vars.UPDATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.UPDATE_APP_PRIVATE_KEY }}
+          # No owner or repositories: the token is scoped to this repository.
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.check.outputs.version }}
+          BASE_SHA: ${{ github.sha }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: bash .github/scripts/open-update-pr.sh

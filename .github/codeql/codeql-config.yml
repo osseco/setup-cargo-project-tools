@@ -1,0 +1,4 @@
+name: setup-cargo-project-tools CodeQL configuration
+
+paths-ignore:
+  - test/fixture

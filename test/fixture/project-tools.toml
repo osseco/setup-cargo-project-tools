@@ -1,0 +1,19 @@
+# Tools managed by `cargo project-tools`.
+
+[settings]
+# Run network commands through sfw (Socket Firewall Free): "auto", "require" or "off".
+sfw = "auto"
+
+[build]
+profile = "release"
+
+[build.profile-settings]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+
+[tool.hexyl]
+version = "0.17.0"
+
+# [tool.cargo-nextest]
+# version = "0.9.80"

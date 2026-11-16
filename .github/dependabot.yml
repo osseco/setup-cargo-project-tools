@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Covers the workflows and the actions action.yml pins (cache).
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/workflows
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"

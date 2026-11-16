@@ -1,0 +1,182 @@
+name: Setup cargo-project-tools
+description: >-
+  Install cargo-project-tools, verified against checksums pinned in this
+  action, then build the project's tools and audit their locks
+author: osseco
+
+branding:
+  icon: tool
+  color: orange
+
+inputs:
+  install:
+    description: >-
+      true runs cargo project-tools install and puts .project-tools/bin on
+      PATH; false only installs cargo-project-tools.
+    required: false
+    default: "true"
+  audit:
+    description: >-
+      false (no audit beyond the one install runs), true (cargo
+      project-tools audit, before install) or deny-warnings (also fail on
+      unmaintained, unsound, notice, yanked and git-source warnings).
+    required: false
+    default: "false"
+  cache:
+    description: >-
+      Keep the built tools and the advisory database in this repository's
+      Actions cache. auto (save on the default branch, restore elsewhere),
+      true (restore, and save after a build or fetch), restore (restore only,
+      never save) or false (no cache).
+    required: false
+    default: auto
+  working-directory:
+    description: >-
+      Directory holding project-tools.toml, relative to the workspace.
+    required: false
+    default: "."
+
+outputs:
+  version:
+    description: Installed cargo-project-tools version, for example 0.3.0
+    value: ${{ steps.resolve.outputs.version }}
+  path:
+    description: Absolute path to the cargo-project-tools binary
+    value: ${{ steps.binary.outputs.path }}
+  cache-hit:
+    description: >-
+      true when the tool binaries came from the Actions cache with an exact
+      key, otherwise false. cargo project-tools install still checks them
+      and rebuilds any that don't match.
+    value: ${{ steps.bin-cache.outputs.cache-hit == 'true' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve cargo-project-tools
+      id: resolve
+      shell: bash
+      env:
+        INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_AUDIT: ${{ inputs.audit }}
+        INPUT_CACHE: ${{ inputs.cache }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: bash "$GITHUB_ACTION_PATH/src/resolve.sh"
+
+    - name: Install cargo-project-tools
+      id: binary
+      shell: bash
+      env:
+        CPT_VERSION: ${{ steps.resolve.outputs.version }}
+        CPT_ASSET: ${{ steps.resolve.outputs.asset }}
+        CPT_SHA256: ${{ steps.resolve.outputs.sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/src/install-binary.sh"
+
+    # Advisory database, kept per ISO week. install audits too, so it is
+    # restored for either. cargo-project-tools revalidates an older copy with
+    # its ETag on its own.
+    - name: Restore advisory database
+      id: db-cache
+      if: (inputs.install == 'true' || inputs.audit != 'false') && steps.resolve.outputs.cache != 'off'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.working-directory }}/.project-tools/advisory-db
+        key: cpt-advisory-db-${{ steps.resolve.outputs.week }}
+        restore-keys: cpt-advisory-db-
+
+    # Before install, so nothing is built from a lock that fails; install then
+    # skips its own audit.
+    - name: Audit tool locks
+      if: inputs.audit != 'false'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        INPUT_AUDIT: ${{ inputs.audit }}
+      run: |
+        set -euo pipefail
+        args=(audit)
+        if [[ "$INPUT_AUDIT" == "deny-warnings" ]]; then
+          args+=(--deny-warnings)
+        fi
+        cargo project-tools "${args[@]}"
+
+    # Tools. The key covers project-tools.toml and every lock, so any change
+    # to a tool's version, lock or build settings misses. An older entry is
+    # restored then, and install rebuilds only the tools whose stamps in
+    # .project-tools/bin no longer match. steps.resolve outputs.cache is save,
+    # restore or off.
+    - name: Restore tool binaries
+      id: bin-cache
+      if: inputs.install == 'true' && steps.resolve.outputs.cache != 'off'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/bin
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/.crates.toml
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/.crates2.json
+        key: cpt-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**/Cargo.lock', steps.resolve.outputs.working-directory)) }}
+        restore-keys: cpt-bin-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Restore tool builds
+      id: targets-cache
+      if: inputs.install == 'true' && steps.resolve.outputs.cache != 'off' && steps.bin-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.working-directory }}/.project-tools/targets
+        key: cpt-targets-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**/Cargo.lock', steps.resolve.outputs.working-directory)) }}
+        restore-keys: cpt-targets-${{ runner.os }}-${{ runner.arch }}-
+
+    # Runs on a cache hit too: install skips every tool whose stamp and
+    # checksums in .project-tools/bin still match, and rebuilds the rest.
+    - name: Install tools
+      if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        INPUT_AUDIT: ${{ inputs.audit }}
+      run: |
+        set -euo pipefail
+        args=(install)
+        if [[ "$INPUT_AUDIT" != "false" ]]; then
+          args+=(--no-audit)
+        fi
+        cargo project-tools "${args[@]}"
+
+    - name: Add tools to PATH
+      if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      # The entry is the workspace path plus a working-directory that
+      # resolve.sh checked against [A-Za-z0-9._/-] without "..".
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+        # shellcheck source=src/lib.sh
+        source "$GITHUB_ACTION_PATH/src/lib.sh"
+        cpt_native_path "$PWD/.project-tools/bin" >>"$GITHUB_PATH"
+
+    # Only without an exact hit: an existing key can't be replaced.
+    - name: Save tool binaries
+      if: inputs.install == 'true' && steps.resolve.outputs.cache == 'save' && steps.bin-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/bin
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/.crates.toml
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/.crates2.json
+        key: ${{ steps.bin-cache.outputs.cache-primary-key }}
+
+    - name: Save tool builds
+      if: inputs.install == 'true' && steps.resolve.outputs.cache == 'save' && steps.bin-cache.outputs.cache-hit != 'true' && steps.targets-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.working-directory }}/.project-tools/targets
+        key: ${{ steps.targets-cache.outputs.cache-primary-key }}
+
+    # Also after a failed audit or install, so the next run doesn't fetch it again.
+    - name: Save advisory database
+      if: always() && (inputs.install == 'true' || inputs.audit != 'false') && steps.resolve.outputs.cache == 'save' && steps.db-cache.outputs.cache-hit != 'true' && steps.db-cache.outcome == 'success'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.working-directory }}/.project-tools/advisory-db
+        key: ${{ steps.db-cache.outputs.cache-primary-key }}

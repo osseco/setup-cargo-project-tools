@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - action.yml
+      - src/**
+      - cargo-project-tools.version
+      - cargo-project-tools.sha256
+      - .github/calculate-version.sh
+      - .github/workflows/release.yml
+      - .github/workflows/check.yml
+      - .github/workflows/version.yml
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    uses: $/.github/workflows/version.yml
+    permissions:
+      contents: read
+
+  check:
+    name: "Check ${{ needs.version.outputs.next_tag }}"
+    needs: version
+    uses: $/.github/workflows/check.yml
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+      packages: read
+
+  publish:
+    needs: [version, check]
+    if: |
+      !cancelled() &&
+      needs.version.result == 'success' &&
+      needs.check.result == 'success' &&
+      needs.version.outputs.next_tag != needs.version.outputs.current_tag
+    runs-on: ubuntu-latest
+    # Deployment branches for this environment are limited to main, with
+    # required reviewers (see TODO.md).
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate version and stage assets
+        env:
+          NEXT_TAG: ${{ needs.version.outputs.next_tag }}
+          NEXT_VERSION: ${{ needs.version.outputs.next_version }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$NEXT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "invalid version: $NEXT_VERSION" >&2
+            exit 1
+          fi
+          if [[ "$NEXT_TAG" != "v${NEXT_VERSION}" ]]; then
+            echo "invalid tag: $NEXT_TAG" >&2
+            exit 1
+          fi
+          cpt="$(head -n 1 cargo-project-tools.version)"
+          # 0.0.0 is the placeholder before the first release is adopted.
+          if [[ "$cpt" == "0.0.0" ]]; then
+            echo "no cargo-project-tools release is pinned; nothing to publish" >&2
+            exit 1
+          fi
+          if [[ "$NEXT_VERSION" != "${cpt}-"* ]]; then
+            echo "version $NEXT_VERSION does not start with cargo-project-tools $cpt" >&2
+            exit 1
+          fi
+          # Releases are immutable: a published tag is never moved or reused.
+          if git rev-parse -q --verify "refs/tags/$NEXT_TAG" >/dev/null; then
+            echo "refusing to republish $NEXT_TAG" >&2
+            exit 1
+          fi
+          mkdir -p staged
+          cp action.yml cargo-project-tools.version cargo-project-tools.sha256 LICENSE staged/
+          cp src/*.sh staged/
+          (
+            cd staged
+            sha256sum -- * > SHA256SUMS
+            cat SHA256SUMS
+          )
+      # Provenance says this workflow published these files from this commit.
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: staged/SHA256SUMS
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_TAG: ${{ needs.version.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          cpt="$(head -n 1 cargo-project-tools.version)"
+          # The exact line users copy; README.md points here. gh puts these
+          # notes above the generated ones.
+          fence="$(printf '\140\140\140')"
+          {
+            printf 'Installs cargo-project-tools %s.\n\n' "$cpt"
+            printf '%syaml\n- uses: %s@%s # %s\n%s\n' "$fence" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$NEXT_TAG" "$fence"
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+          # Attach every asset to a draft, then publish; publishing creates the
+          # tag on this commit and, with immutable releases, locks tag and assets.
+          gh release create "$NEXT_TAG" staged/* \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "$NEXT_TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --generate-notes
+          gh release edit "$NEXT_TAG" --draft=false --latest

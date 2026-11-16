@@ -1,0 +1,223 @@
+name: Check
+
+# Everything a change must pass. Called by pr.yml and release.yml.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pinned: ${{ steps.pins.outputs.pinned }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck -x src/*.sh scripts/*.sh .github/scripts/*.sh .github/calculate-version.sh test/run.sh
+      - name: Unit tests
+        run: bash test/run.sh
+      - name: Version rules
+        run: bash .github/calculate-version.sh --self-check
+      # Until the first cargo-project-tools release is adopted the pins are a
+      # placeholder, and the jobs that download it are skipped.
+      - name: Pinned release
+        id: pins
+        run: |
+          set -euo pipefail
+          if [ "$(head -n 1 cargo-project-tools.version)" = "0.0.0" ]; then
+            echo "::warning::No cargo-project-tools release is pinned yet; e2e jobs are skipped."
+            echo "pinned=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pinned=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    name: Action on ${{ matrix.name }}
+    needs: test
+    if: needs.test.outputs.pinned == 'true'
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: macos-arm64, os: macos-latest }
+          - { name: windows-x64, os: windows-latest }
+          - { name: linux-x64-musl, os: ubuntu-latest, container: "rust:1-alpine" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # rust:1-alpine has no bash, curl or git; cargo-project-tools needs the
+      # checkout to be a git repository.
+      - name: Prepare Alpine
+        if: matrix.container
+        shell: sh
+        run: apk add --no-cache bash curl git musl-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/
+        id: cpt
+        with:
+          working-directory: test/fixture
+          audit: "true"
+          cache: "false"
+      - name: Check outputs
+        env:
+          VERSION: ${{ steps.cpt.outputs.version }}
+          CPT_PATH: ${{ steps.cpt.outputs.path }}
+          CACHE_HIT: ${{ steps.cpt.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "$VERSION" = "$(head -n 1 cargo-project-tools.version)"
+          test -f "$CPT_PATH"
+          test "$CACHE_HIT" = "false"
+          cargo project-tools --version | grep -F "$VERSION"
+      - name: Run a project tool from PATH
+        run: echo hello | hexyl
+
+  e2e-cache-save:
+    name: Action saves the cache
+    needs: test
+    if: needs.test.outputs.pinned == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # true, not the default auto: auto doesn't save on pull requests.
+      - uses: $/
+        with:
+          working-directory: test/fixture
+          audit: "true"
+          cache: "true"
+      - run: echo hello | hexyl
+
+  e2e-cache-restore:
+    name: Action restores from cache
+    needs: e2e-cache-save
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The cache keeps file times, so a restored binary is older than this.
+      - name: Mark the start
+        run: touch "$RUNNER_TEMP/start"
+      - uses: $/
+        id: cpt
+        with:
+          working-directory: test/fixture
+          audit: "true"
+          cache: restore
+      - name: Expect a cache hit without a rebuild
+        env:
+          CACHE_HIT: ${{ steps.cpt.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = "true"
+          test -f test/fixture/.project-tools/bin/hexyl
+          test ! test/fixture/.project-tools/bin/hexyl -nt "$RUNNER_TEMP/start"
+      - run: echo hello | hexyl
+
+  e2e-deny-warnings:
+    name: audit deny-warnings fails on a warning
+    needs: test
+    if: needs.test.outputs.pinned == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The fixture's hexyl lock has an unsound-advisory warning.
+      - uses: $/
+        id: cpt
+        continue-on-error: true
+        with:
+          working-directory: test/fixture
+          install: "false"
+          audit: deny-warnings
+          cache: "false"
+      - name: Expect failure
+        env:
+          OUTCOME: ${{ steps.cpt.outcome }}
+        run: test "$OUTCOME" = "failure"
+
+  e2e-rejects:
+    name: Action rejects ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: an unsupported platform, os: macos-15-intel, cache: "false", audit: "false", workdir: . }
+          - { name: an invalid input, os: ubuntu-latest, cache: "yes", audit: "false", workdir: . }
+          - { name: a parent working-directory, os: ubuntu-latest, cache: "false", audit: "false", workdir: .. }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/
+        id: cpt
+        continue-on-error: true
+        with:
+          install: "false"
+          audit: ${{ matrix.audit }}
+          cache: ${{ matrix.cache }}
+          working-directory: ${{ matrix.workdir }}
+      - name: Expect failure
+        env:
+          OUTCOME: ${{ steps.cpt.outcome }}
+        run: test "$OUTCOME" = "failure"
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
+  codeql:
+    uses: $/.github/workflows/codeql.yml
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+      packages: read
+
+  zizmor:
+    uses: $/.github/workflows/zizmor.yml
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+  actionlint:
+    uses: $/.github/workflows/actionlint.yml
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
