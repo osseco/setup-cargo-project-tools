@@ -35,6 +35,22 @@ inputs:
       Directory holding project-tools.toml, relative to the workspace.
     required: false
     default: "."
+  sandbox:
+    description: >-
+      Where the tools build. container (on Linux, in a Docker container with
+      no network, no capabilities and only the build output writable; macOS
+      always uses sandbox-exec, Windows has no sandbox) or cpt (the
+      project's own [build].sandbox, for job containers and runners without
+      Docker).
+    required: false
+    default: container
+  container-image:
+    description: >-
+      Image for sandbox: container. It needs cc and the runner's glibc.
+      Empty uses buildpack-deps for the runner's Ubuntu release, pinned by
+      digest in this action.
+    required: false
+    default: ""
 
 outputs:
   version:
@@ -49,6 +65,13 @@ outputs:
       key, otherwise false. cargo project-tools install still checks them
       and rebuilds any that don't match.
     value: ${{ steps.bin-cache.outputs.cache-hit == 'true' }}
+  records:
+    description: >-
+      Path to a file with every JSON record cargo-project-tools wrote in this
+      step (audit, check, install), one per line. See the cargo-project-tools
+      JSON output docs. Values in it come from locks, crates and the advisory
+      database: check them before you use them.
+    value: ${{ steps.resolve.outputs.records }}
 
 runs:
   using: composite
@@ -61,6 +84,8 @@ runs:
         INPUT_AUDIT: ${{ inputs.audit }}
         INPUT_CACHE: ${{ inputs.cache }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_SANDBOX: ${{ inputs.sandbox }}
+        INPUT_CONTAINER_IMAGE: ${{ inputs.container-image }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: bash "$GITHUB_ACTION_PATH/src/resolve.sh"
 
@@ -85,63 +110,124 @@ runs:
         key: cpt-advisory-db-${{ steps.resolve.outputs.week }}
         restore-keys: cpt-advisory-db-
 
-    # Before install, so nothing is built from a lock that fails; install then
-    # skips its own audit.
-    - name: Audit tool locks
-      if: inputs.audit != 'false'
-      shell: bash
-      working-directory: ${{ steps.resolve.outputs.working-directory }}
-      env:
-        INPUT_AUDIT: ${{ inputs.audit }}
-      run: |
-        set -euo pipefail
-        args=(audit)
-        if [[ "$INPUT_AUDIT" == "deny-warnings" ]]; then
-          args+=(--deny-warnings)
-        fi
-        cargo project-tools "${args[@]}"
-
-    # Tools. The key covers project-tools.toml and every lock, so any change
-    # to a tool's version, lock or build settings misses. An older entry is
-    # restored then, and install rebuilds only the tools whose stamps in
-    # .project-tools/bin no longer match. steps.resolve outputs.cache is save,
-    # restore or off.
+    # Tools. The key covers project-tools.toml and everything in
+    # .project-tools/crates (locks, build reviews, overrides), so any change
+    # to a tool's version, lock, build settings or review decisions misses. An
+    # older entry is restored then, and install rebuilds only the tools whose
+    # stamps in .project-tools/bin no longer match. Restored for audit too:
+    # bin/.stamps/<tool>.built.json saves the downloads audit needs to find
+    # what each tool builds. steps.resolve outputs.cache is save, restore or
+    # off.
     - name: Restore tool binaries
       id: bin-cache
-      if: inputs.install == 'true' && steps.resolve.outputs.cache != 'off'
+      if: (inputs.install == 'true' || inputs.audit != 'false') && steps.resolve.outputs.cache != 'off'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ${{ steps.resolve.outputs.working-directory }}/.project-tools/bin
           ${{ steps.resolve.outputs.working-directory }}/.project-tools/.crates.toml
           ${{ steps.resolve.outputs.working-directory }}/.project-tools/.crates2.json
-        key: cpt-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**/Cargo.lock', steps.resolve.outputs.working-directory)) }}
+        key: cpt-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**', steps.resolve.outputs.working-directory)) }}
         restore-keys: cpt-bin-${{ runner.os }}-${{ runner.arch }}-
 
+    # Before anything runs that writes into .project-tools/targets. Vendored
+    # sources are fetched again for every build, previous versions are only
+    # for reviewing, and prepared state is valid only for the run that made
+    # it, so none of them are cached.
     - name: Restore tool builds
       id: targets-cache
       if: inputs.install == 'true' && steps.resolve.outputs.cache != 'off' && steps.bin-cache.outputs.cache-hit != 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.resolve.outputs.working-directory }}/.project-tools/targets
-        key: cpt-targets-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**/Cargo.lock', steps.resolve.outputs.working-directory)) }}
+        path: |
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/targets
+          !${{ steps.resolve.outputs.working-directory }}/.project-tools/targets/*/vendor
+          !${{ steps.resolve.outputs.working-directory }}/.project-tools/targets/*/previous
+          !${{ steps.resolve.outputs.working-directory }}/.project-tools/targets/*/prepared.json
+        key: cpt-targets-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**', steps.resolve.outputs.working-directory)) }}
         restore-keys: cpt-targets-${{ runner.os }}-${{ runner.arch }}-
 
-    # Runs on a cache hit too: install skips every tool whose stamp and
-    # checksums in .project-tools/bin still match, and rebuilds the rest.
-    - name: Install tools
+    # Before check, so nothing is built from a lock that fails; check then
+    # skips its own audit. Every cargo-project-tools run below appends its
+    # JSON records to the records output, and runs with workflow commands
+    # turned off (src/run-cpt.sh).
+    - name: Audit tool locks
+      if: inputs.audit != 'false'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        INPUT_AUDIT: ${{ inputs.audit }}
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+      run: |
+        set -euo pipefail
+        args=(audit)
+        if [[ "$INPUT_AUDIT" == "deny-warnings" ]]; then
+          args+=(--deny-warnings)
+        fi
+        bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
+
+    # Everything install checks before it builds, for every tool at once:
+    # this runner against targets, the audit, the build review and the
+    # sandbox. Builds nothing; prepares the tools that aren't up to date.
+    - name: Check tools
       if: inputs.install == 'true'
       shell: bash
       working-directory: ${{ steps.resolve.outputs.working-directory }}
       env:
         INPUT_AUDIT: ${{ inputs.audit }}
+        CPT_SANDBOX: ${{ steps.resolve.outputs.sandbox }}
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
       run: |
         set -euo pipefail
-        args=(install)
+        args=(check)
         if [[ "$INPUT_AUDIT" != "false" ]]; then
           args+=(--no-audit)
         fi
-        cargo project-tools "${args[@]}"
+        if [[ -n "$CPT_SANDBOX" ]]; then
+          args+=(--sandbox "$CPT_SANDBOX")
+        fi
+        bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
+
+    # Linux with sandbox: container. Builds what check prepared, offline,
+    # in a locked-down container; skipped when check prepared nothing.
+    - name: Install tools in a container
+      if: inputs.install == 'true' && steps.resolve.outputs.container-image != ''
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+        CPT_PATH: ${{ steps.binary.outputs.path }}
+        CPT_CONTAINER_IMAGE: ${{ steps.resolve.outputs.container-image }}
+      run: bash "$GITHUB_ACTION_PATH/src/install-container.sh"
+
+    # Runs on a cache hit too: install skips every tool whose stamp and
+    # checksums in .project-tools/bin still match, and builds the rest from
+    # what check prepared. check or the audit step already audited.
+    - name: Install tools
+      if: inputs.install == 'true' && steps.resolve.outputs.container-image == ''
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        CPT_SANDBOX: ${{ steps.resolve.outputs.sandbox }}
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+      run: |
+        set -euo pipefail
+        args=(install --no-audit)
+        if [[ -n "$CPT_SANDBOX" ]]; then
+          args+=(--sandbox "$CPT_SANDBOX")
+        fi
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          echo "::notice::No build sandbox is available on Windows; tools build unsandboxed."
+        fi
+        bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
+
+    - name: Annotate findings
+      if: always() && steps.resolve.outputs.records != ''
+      shell: bash
+      env:
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+        CPT_WORKDIR: ${{ steps.resolve.outputs.working-directory }}
+      run: bash "$GITHUB_ACTION_PATH/src/annotate.sh"
 
     - name: Add tools to PATH
       if: inputs.install == 'true'
@@ -155,7 +241,8 @@ runs:
         source "$GITHUB_ACTION_PATH/src/lib.sh"
         cpt_native_path "$PWD/.project-tools/bin" >>"$GITHUB_PATH"
 
-    # Only without an exact hit: an existing key can't be replaced.
+    # Only without an exact hit: an existing key can't be replaced. Never from
+    # an audit-only run, whose entry would hold stamps but no binaries.
     - name: Save tool binaries
       if: inputs.install == 'true' && steps.resolve.outputs.cache == 'save' && steps.bin-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -170,7 +257,11 @@ runs:
       if: inputs.install == 'true' && steps.resolve.outputs.cache == 'save' && steps.bin-cache.outputs.cache-hit != 'true' && steps.targets-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.resolve.outputs.working-directory }}/.project-tools/targets
+        path: |
+          ${{ steps.resolve.outputs.working-directory }}/.project-tools/targets
+          !${{ steps.resolve.outputs.working-directory }}/.project-tools/targets/*/vendor
+          !${{ steps.resolve.outputs.working-directory }}/.project-tools/targets/*/previous
+          !${{ steps.resolve.outputs.working-directory }}/.project-tools/targets/*/prepared.json
         key: ${{ steps.targets-cache.outputs.cache-primary-key }}
 
     # Also after a failed audit or install, so the next run doesn't fetch it again.

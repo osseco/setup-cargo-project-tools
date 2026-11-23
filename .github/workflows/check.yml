@@ -50,21 +50,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x64, os: ubuntu-latest }
+          # ubuntu-latest, so a new runner image without a pinned build image
+          # in container-images fails here first.
+          - { name: linux-x64-latest, os: ubuntu-latest }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-x64-jammy, os: ubuntu-22.04 }
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: macos-arm64, os: macos-latest }
           - { name: windows-x64, os: windows-latest }
-          - { name: linux-x64-musl, os: ubuntu-latest, container: "rust:1-alpine" }
+          # A job container has no Docker, so the build uses the project's
+          # own sandbox setting.
+          - { name: linux-x64-musl, os: ubuntu-latest, container: "rust:1-alpine", sandbox: cpt }
     defaults:
       run:
         shell: bash
     steps:
-      # rust:1-alpine has no bash, curl or git; cargo-project-tools needs the
-      # checkout to be a git repository.
+      # rust:1-alpine has no bash, curl, git or jq; cargo-project-tools needs
+      # the checkout to be a git repository, and the action needs jq for
+      # annotations.
       - name: Prepare Alpine
         if: matrix.container
         shell: sh
-        run: apk add --no-cache bash curl git musl-dev
+        run: apk add --no-cache bash curl git jq musl-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -74,6 +81,7 @@ jobs:
           working-directory: test/fixture
           audit: "true"
           cache: "false"
+          sandbox: ${{ matrix.sandbox || 'container' }}
       - name: Check outputs
         env:
           VERSION: ${{ steps.cpt.outputs.version }}
@@ -85,6 +93,25 @@ jobs:
           test -f "$CPT_PATH"
           test "$CACHE_HIT" = "false"
           cargo project-tools --version | grep -F "$VERSION"
+      # Without a cache hexyl is prepared by check and built by install. On
+      # macOS the action requires the sandbox, so it must be sandbox-exec. On
+      # Linux runners it builds in the container with --sandbox off, so
+      # there is no sandbox-missing either.
+      - name: Check records
+        env:
+          RECORDS: ${{ steps.cpt.outputs.records }}
+          SANDBOX: ${{ matrix.sandbox || 'container' }}
+        run: |
+          set -euo pipefail
+          jq -e -s 'any(.kind == "prepared" and .tool == "hexyl")' "$RECORDS"
+          jq -e -s 'any(.kind == "built" and .tool == "hexyl")' "$RECORDS"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            jq -e -s 'all(.[] | select(.kind == "built"); .sandbox == "sandbox-exec")' "$RECORDS"
+          fi
+          if [ "$RUNNER_OS" = "Linux" ] && [ "$SANDBOX" = "container" ]; then
+            jq -e -s 'all(.[] | select(.kind == "built"); .sandbox == "none")' "$RECORDS"
+            jq -e -s 'all(.[]; .kind != "sandbox-missing")' "$RECORDS"
+          fi
       - name: Run a project tool from PATH
         run: echo hello | hexyl
 
@@ -117,9 +144,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The cache keeps file times, so a restored binary is older than this.
-      - name: Mark the start
-        run: touch "$RUNNER_TEMP/start"
       - uses: $/
         id: cpt
         with:
@@ -129,11 +153,12 @@ jobs:
       - name: Expect a cache hit without a rebuild
         env:
           CACHE_HIT: ${{ steps.cpt.outputs.cache-hit }}
+          RECORDS: ${{ steps.cpt.outputs.records }}
         run: |
           set -euo pipefail
           test "$CACHE_HIT" = "true"
-          test -f test/fixture/.project-tools/bin/hexyl
-          test ! test/fixture/.project-tools/bin/hexyl -nt "$RUNNER_TEMP/start"
+          jq -e -s 'any(.kind == "up-to-date" and .tool == "hexyl")' "$RECORDS"
+          jq -e -s 'all(.[]; .kind != "prepared" and .kind != "built")' "$RECORDS"
       - run: echo hello | hexyl
 
   e2e-deny-warnings:
@@ -159,7 +184,53 @@ jobs:
       - name: Expect failure
         env:
           OUTCOME: ${{ steps.cpt.outcome }}
-        run: test "$OUTCOME" = "failure"
+          RECORDS: ${{ steps.cpt.outputs.records }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = "failure"
+          jq -e -s 'any(.kind == "advisory" and .severity == "warning")' "$RECORDS"
+
+  e2e-check-rejects:
+    name: check rejects ${{ matrix.name }}
+    needs: test
+    if: needs.test.outputs.pinned == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: build-time code without a decision
+            break: rm test/fixture/.project-tools/crates/hexyl/build-review.toml
+            record: review-pending
+          - name: a runner missing from targets
+            break: sed -i '/"x86_64-unknown-linux-gnu",/d' test/fixture/project-tools.toml
+            record: target-missing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Break the fixture
+        env:
+          BREAK: ${{ matrix.break }}
+        run: bash -c "$BREAK"
+      - uses: $/
+        id: cpt
+        continue-on-error: true
+        with:
+          working-directory: test/fixture
+          cache: "false"
+      - name: Expect failure before any build
+        env:
+          OUTCOME: ${{ steps.cpt.outcome }}
+          RECORDS: ${{ steps.cpt.outputs.records }}
+          RECORD: ${{ matrix.record }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = "failure"
+          jq -e -s --arg kind "$RECORD" 'any(.kind == $kind and .tool == "hexyl")' "$RECORDS"
+          jq -e -s 'all(.[]; .kind != "built")' "$RECORDS"
 
   e2e-rejects:
     name: Action rejects ${{ matrix.name }}
@@ -173,6 +244,8 @@ jobs:
           - { name: an unsupported platform, os: macos-15-intel, cache: "false", audit: "false", workdir: . }
           - { name: an invalid input, os: ubuntu-latest, cache: "yes", audit: "false", workdir: . }
           - { name: a parent working-directory, os: ubuntu-latest, cache: "false", audit: "false", workdir: .. }
+          - { name: an invalid sandbox, os: ubuntu-latest, cache: "false", audit: "false", workdir: ., sandbox: bwrap }
+          - { name: an invalid container-image, os: ubuntu-latest, cache: "false", audit: "false", workdir: ., image: "x;id" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -185,6 +258,8 @@ jobs:
           audit: ${{ matrix.audit }}
           cache: ${{ matrix.cache }}
           working-directory: ${{ matrix.workdir }}
+          sandbox: ${{ matrix.sandbox || 'container' }}
+          container-image: ${{ matrix.image || '' }}
       - name: Expect failure
         env:
           OUTCOME: ${{ steps.cpt.outcome }}

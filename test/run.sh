@@ -153,6 +153,128 @@ expect_out "cache auto restores on tag named like branch" restore cpt_cache_mode
 expect_out "cache auto restores without default branch" restore cpt_cache_mode auto refs/heads/main ""
 expect_fail "cache unknown mode" cpt_cache_mode yes refs/heads/main main
 
+# --- sandbox and stop-commands
+expect_out "sandbox required on macos" require cpt_sandbox_mode macOS
+expect_out "sandbox left to the project on linux" "" cpt_sandbox_mode Linux
+expect_out "sandbox left to the project on windows" "" cpt_sandbox_mode Windows
+if [[ "$(cpt_token)" =~ ^[0-9a-f]{32}$ ]]; then pass "token is 32 hex digits"; else fail "token shape"; fi
+if [[ "$(cpt_token)" != "$(cpt_token)" ]]; then pass "tokens differ"; else fail "tokens repeat"; fi
+
+: >"$tmp/run.jsonl"
+out="$(cpt_run_recorded "$tmp/run.jsonl" sh -c 'echo "{\"kind\":\"x\"}"; echo "::error::from a crate" >&2; exit 3' 2>&1)"
+status=$?
+if [[ "$status" == 3 ]]; then pass "run keeps the exit status"; else fail "run exit status: $status"; fi
+if [[ "$(cat "$tmp/run.jsonl")" == '{"kind":"x"}' ]]; then pass "run appends stdout to records"; else fail "run records"; fi
+if [[ "$out" =~ ^::stop-commands::([0-9a-f]{32})$'\n'::error::from\ a\ crate$'\n'::([0-9a-f]{32})::$ ]] &&
+  [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+  pass "run turns workflow commands off around the output"
+else
+  fail "run stop-commands: $out"
+fi
+
+# --- container
+expect_ok "image with tag and digest" cpt_check_image "buildpack-deps:noble@sha256:$a"
+expect_ok "image with registry and path" cpt_check_image ghcr.io/org/build-image:1.2
+expect_ok "image name only" cpt_check_image buildpack-deps
+expect_fail "image with shell characters" cpt_check_image 'x;id'
+expect_fail "image with option" cpt_check_image --privileged
+expect_fail "image with uppercase name" cpt_check_image Ubuntu:24.04
+expect_fail "image with short digest" cpt_check_image buildpack-deps@sha256:abc
+expect_fail "image with space" cpt_check_image 'a b'
+
+printf 'x:y img:1@sha256:%s\nubuntu:noble buildpack-deps:noble@sha256:%s\n' "$a" "$b" >"$tmp/images"
+printf 'NAME="Ubuntu"\nID=ubuntu\nVERSION_CODENAME=noble\n' >"$tmp/os-release"
+expect_out "image for ubuntu noble" "buildpack-deps:noble@sha256:$b" cpt_container_image "$tmp/os-release" "$tmp/images"
+printf 'ID="ubuntu"\nVERSION_CODENAME="noble"\n' >"$tmp/os-release"
+expect_out "image for quoted os-release" "buildpack-deps:noble@sha256:$b" cpt_container_image "$tmp/os-release" "$tmp/images"
+printf 'ID=ubuntu\nVERSION_CODENAME=focal\n' >"$tmp/os-release"
+expect_fail "no image for another release" cpt_container_image "$tmp/os-release" "$tmp/images"
+printf 'ID=alpine\n' >"$tmp/os-release"
+expect_fail "no image without a codename" cpt_container_image "$tmp/os-release" "$tmp/images"
+
+while read -r key image; do
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  if cpt_check_image "$image" 2>/dev/null && [[ "$image" == *@sha256:* ]]; then
+    pass "committed image for $key is pinned by digest"
+  else
+    fail "committed image for $key: '$image'"
+  fi
+done <"$ROOT/container-images"
+
+# --- annotations
+# expect_lines <label> <workdir> <want> <record>...: cpt_annotate on the
+# records prints exactly want.
+expect_lines() {
+  local label="$1"
+  local workdir="$2"
+  local want="$3"
+  shift 3
+  printf '%s\n' "$@" >"$tmp/records.jsonl"
+  expect_out "$label" "$want" cpt_annotate "$workdir" "$tmp/records.jsonl"
+}
+
+if command -v jq >/dev/null 2>&1; then
+  lock='"file":".project-tools/crates/hexyl/Cargo.lock"'
+  expect_lines "advisory warning with line" . \
+    '::warning file=.project-tools/crates/hexyl/Cargo.lock,line=63,title=RUSTSEC-1 in hexyl::anyhow@1.0.91: unsound (patched: >=1.0.103). Fix: cargo project-tools update hexyl anyhow' \
+    '{"version":1,"kind":"advisory","tool":"hexyl",'"$lock"',"line":63,"id":"RUSTSEC-1","package":"anyhow","package_version":"1.0.91","title":"unsound","patched":[">=1.0.103"],"severity":"warning","fix":"cargo project-tools update hexyl anyhow"}'
+  expect_lines "advisory error, platforms, working-directory prefix" test/fixture \
+    '::error file=test/fixture/.project-tools/crates/hexyl/Cargo.lock,title=RUSTSEC-2 in hexyl::a@1: bad (only on: windows)' \
+    '{"version":1,"kind":"advisory","tool":"hexyl",'"$lock"',"id":"RUSTSEC-2","package":"a","package_version":"1","title":"bad","severity":"error","affected":{"os":["windows"]}}'
+  expect_lines "self-advisory points at the action" . \
+    '::error file=.project-tools/self-audit-ignore.toml,title=RUSTSEC-3 in cargo-project-tools::cargo-project-tools@5.6.0: t. Update setup-cargo-project-tools, or accept it in .project-tools/self-audit-ignore.toml.' \
+    '{"version":1,"kind":"advisory","tool":"cargo-project-tools","file":".project-tools/self-audit-ignore.toml","id":"RUSTSEC-3","package":"cargo-project-tools","package_version":"5.6.0","title":"t","severity":"error","fix":"upgrade"}'
+  # shellcheck disable=SC2016 # backticks are part of the message
+  expect_lines "review pending never suggests approving" . \
+    '::error file=.project-tools/crates/hexyl/build-review.toml,line=4,title=Build review%3A hexyl::build-script libc@0.2.161 build.rs has no decision (changed: sha256). Decide it with `cargo project-tools review hexyl` where you work, then commit build-review.toml.' \
+    '{"version":1,"kind":"review-pending","tool":"hexyl","file":".project-tools/crates/hexyl/build-review.toml","line":4,"item":{"type":"build-script","package":"libc","version":"0.2.161","path":"build.rs","previous":{"changed":["sha256"]}},"spec":"libc@0.2.161=ab","entry":"x"}'
+  expect_lines "build-failed annotated once, its error skipped" . \
+    '::error title=hexyl 0.17.0::hexyl 0.17.0 failed to build (cargo exit 101)' \
+    '{"version":1,"kind":"build-failed","tool":"hexyl","tool_version":"0.17.0","sandbox":"none","exit_status":101,"prepared":true,"command":"cargo install","message":"hexyl 0.17.0 failed to build (cargo exit 101)"}' \
+    '{"version":1,"kind":"error","tool":"hexyl","tool_version":"0.17.0","message":"hexyl 0.17.0: failed"}' \
+    '{"version":1,"kind":"error","message":"install failed"}'
+  expect_lines "error about a tool" . \
+    '::error title=hexyl 0.17.0::hexyl 0.17.0: isn'"'"'t prepared' \
+    '{"version":1,"kind":"error","tool":"hexyl","tool_version":"0.17.0","message":"hexyl 0.17.0: isn'"'"'t prepared"}' \
+    '{"version":1,"kind":"error","message":"check failed"}'
+  expect_lines "general error only when nothing else" . \
+    '::error title=cargo-project-tools::no project-tools.toml' \
+    '{"version":1,"kind":"error","message":"no project-tools.toml"}' \
+    '{"version":1,"kind":"summary","ok":false}'
+  expect_lines "warnings, duplicates collapsed" . \
+    "$(printf '%s\n' \
+      '::warning title=Socket Firewall::sfw not found' \
+      '::warning file=project-tools.toml,line=9,title=Build sandbox%3A hexyl::no sandbox' \
+      '::warning file=.project-tools/crates/hexyl/audit-ignore.toml,line=2,title=Audit ignore%3A hexyl::Ignore RUSTSEC-4 expired on 2026-01-01. Renew or remove it.')" \
+    '{"version":1,"kind":"sfw-missing","message":"sfw not found"}' \
+    '{"version":1,"kind":"sfw-missing","message":"sfw not found"}' \
+    '{"version":1,"kind":"sandbox-missing","tool":"hexyl","file":"project-tools.toml","line":9,"message":"no sandbox"}' \
+    '{"version":1,"kind":"ignore-expired","tool":"hexyl","file":".project-tools/crates/hexyl/audit-ignore.toml","line":2,"id":"RUSTSEC-4","expires":"2026-01-01"}'
+  expect_lines "records without findings say nothing" . "" \
+    '{"version":1,"kind":"prepared","tool":"hexyl","tool_version":"0.17.0"}' \
+    '{"version":1,"kind":"built","tool":"hexyl","tool_version":"0.17.0","sandbox":"sandbox-exec","bins":["hexyl"]}' \
+    '{"version":1,"kind":"up-to-date","tool":"hexyl","tool_version":"0.17.0","bins":["hexyl"]}' \
+    '{"version":1,"kind":"summary","ok":true}'
+  expect_lines "hostile values are escaped" . \
+    '::warning file=.project-tools/crates/hexyl/Cargo.lock,title=X%2C%3A in hexyl::p@1: a%0A::error::b %2525 c%0D' \
+    '{"version":1,"kind":"advisory","tool":"hexyl",'"$lock"',"line":0,"id":"X,:","package":"p","package_version":"1","title":"a\n::error::b %25 c\r","severity":"warning"}'
+  expect_lines "unexpected file, line and tool are dropped" . \
+    '::error title=Targets%3A a tool::This runner builds for x86_64-unknown-linux-gnu, which isn'"'"'t in the tool'"'"'s targets. Add it to project-tools.toml where you work, then commit it.' \
+    '{"version":1,"kind":"target-missing","tool":"../x","file":"../../etc/passwd","line":4,"targets":["x86_64-unknown-linux-gnu"]}'
+  expect_lines "other versions, bad lines and unknown kinds are skipped" . \
+    "$(printf '%s\n' \
+      "::notice::Skipped 2 lines from cargo-project-tools that aren't version 1 JSON records." \
+      "::notice::Skipped 1 cargo-project-tools records of kinds this action doesn't know.")" \
+    '{"version":2,"kind":"advisory"}' 'not json' '{"version":1,"kind":"mystery"}'
+
+  printf '%s\n' 'not json' '{"version":1,"kind":"up-to-date","tool":"a"}' '{"version":1,"kind":"prepared","tool":"b"}' >"$tmp/records.jsonl"
+  expect_ok "prepared found among other records" cpt_has_prepared "$tmp/records.jsonl"
+  printf '%s\n' '{"version":1,"kind":"up-to-date","tool":"a"}' '{"version":2,"kind":"prepared"}' >"$tmp/records.jsonl"
+  expect_fail "nothing prepared" cpt_has_prepared "$tmp/records.jsonl"
+else
+  printf 'skip annotations: jq is not on PATH\n'
+fi
+
 # --- release helpers
 expect_ok "version gt patch" cpt_version_gt 1.2.4 1.2.3
 expect_ok "version gt minor numeric" cpt_version_gt 1.10.0 1.9.9

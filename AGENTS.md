@@ -41,7 +41,7 @@ Prefix every command that downloads crates with `sfw` (`sfw cargo …`). cargo-p
 
 Run `pre-commit run --all-files` before handing over a chunk. It runs shellcheck, the unit tests, the version rules self-check, zizmor, actionlint and basic file checks.
 
-It needs these on PATH: `bash`, `shellcheck`, `zizmor`, `actionlint`, `pre-commit`.
+It needs these on PATH: `bash`, `shellcheck`, `zizmor`, `actionlint`, `pre-commit`, and `jq` for the annotation tests (skipped without it).
 
 Unit tests are plain bash in `test/run.sh` and must not touch the network. Logic lives in functions in `src/lib.sh` and `scripts/release-lib.sh` that take everything as arguments; the step scripts only wire environment variables to them. The action itself is tested end to end in `check.yml` against `test/fixture/`.
 
@@ -49,9 +49,13 @@ Unit tests are plain bash in `test/run.sh` and must not touch the network. Logic
 
 - `action.yml`: the composite action — inputs, outputs, and the steps below.
 - `cargo-project-tools.version`, `cargo-project-tools.sha256`: the one cargo-project-tools version this action installs, and the sha256 of every asset (sha256sum format). Only `scripts/update-cargo-project-tools.sh` writes them, together with the version marker in `README.md`. `0.0.0` with an empty sha256 file is the placeholder before the first release is adopted.
-- `src/lib.sh`: input validation, runner to asset (`cpt_asset`), reading the pins, sha256, cache mode (`cpt_cache_mode`), path conversion for Windows.
-- `src/resolve.sh`: step 1 — validates inputs, resolves asset, pinned sha256 and cache mode, checks `project-tools.toml` and `cargo`.
+- `container-images`: the default build image per Ubuntu release for `sandbox: container`, pinned by digest.
+- `src/lib.sh`: input validation, runner to asset (`cpt_asset`), reading the pins, sha256, cache mode (`cpt_cache_mode`), path conversion for Windows, sandbox mode and build image, running cargo-project-tools with records and stop-commands (`cpt_run_recorded`), annotations (`cpt_annotate`).
+- `src/resolve.sh`: step 1 — validates inputs, resolves asset, pinned sha256, cache mode, sandbox and build image, checks `project-tools.toml`, `cargo` and Docker, creates the records file.
 - `src/install-binary.sh`: step 2 — downloads, verifies, puts cargo-project-tools on `PATH`.
+- `src/run-cpt.sh`: runs `cargo project-tools` for the audit, check and install steps, with JSON records appended to the records file.
+- `src/install-container.sh`: the Linux install, offline in a locked-down container, from what `check` prepared.
+- `src/annotate.sh`, `src/annotate.jq`: turn the records into annotations, checking and escaping every value.
 - `scripts/release-lib.sh`: version comparison, README marker.
 - `scripts/update-cargo-project-tools.sh X.Y.Z`: adopts a release. By hand it creates a branch and stages the result; with `--ci` it only writes the files. Agents may run it only when asked, and never commit what it stages.
 - `.github/scripts/check-cargo-project-tools.sh`, `.github/scripts/open-update-pr.sh`: the update workflow's check, and its signed commit and pull request.
@@ -62,7 +66,9 @@ Unit tests are plain bash in `test/run.sh` and must not touch the network. Logic
 - Never put a binary on `PATH` or run it before it has matched the sha256 in `cargo-project-tools.sha256`.
 - Download only from `https://github.com/osseco/cargo-project-tools/releases/download/`. No mirrors, no other hosts.
 - Never take a checksum from the same place as the binary at run time.
-- No new actions in `action.yml` without the maintainer's agreement; pin them by full SHA.
+- No new actions in `action.yml` without the maintainer's agreement; pin them by full SHA. Container images are pinned by digest too.
+- Never pass `--auto-approve`, `--approve-target` or `review --approve`/`--from` in the action or its workflows. Build-time code is decided by people, where they work.
+- Run cargo-project-tools through `cpt_run_recorded`, so its output can't issue workflow commands. Values from its records reach annotations only through `src/annotate.jq`.
 - Validate every input against its allowed values before any other step uses it. Inputs reach `run:` only through `env:`, never inline in a script.
 
 ## GitHub Actions

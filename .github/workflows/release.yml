@@ -8,6 +8,7 @@ on:
       - src/**
       - cargo-project-tools.version
       - cargo-project-tools.sha256
+      - container-images
       - .github/calculate-version.sh
       - .github/workflows/release.yml
       - .github/workflows/check.yml
@@ -86,8 +87,8 @@ jobs:
             exit 1
           fi
           mkdir -p staged
-          cp action.yml cargo-project-tools.version cargo-project-tools.sha256 LICENSE staged/
-          cp src/*.sh staged/
+          cp action.yml cargo-project-tools.version cargo-project-tools.sha256 container-images LICENSE staged/
+          cp src/*.sh src/*.jq staged/
           (
             cd staged
             sha256sum -- * > SHA256SUMS
