@@ -178,10 +178,54 @@ cpt_sandbox_mode() {
   esac
 }
 
+# cpt_check_image <image>: a container image reference, name[:tag][@digest],
+# with nothing a shell or docker could read as anything else.
+cpt_check_image() {
+  if [[ ! "$1" =~ ^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$ ]]; then
+    cpt_error "input container-image must be an image reference like name:tag@sha256:<digest>; got '$1'"
+    return 1
+  fi
+}
+
+# cpt_container_image <os-release file> <images file>: the pinned default
+# image for this distro release, from ID and VERSION_CODENAME.
+cpt_container_image() {
+  local id codename key image
+  id="$(sed -n 's/^ID=//p' "$1" | tr -d '"')"
+  codename="$(sed -n 's/^VERSION_CODENAME=//p' "$1" | tr -d '"')"
+  key="$id:$codename"
+  image="$(awk -v key="$key" '$1 == key { print $2 }' "$2")"
+  if [[ -z "$id" || -z "$codename" || -z "$image" ]]; then
+    cpt_error "no default build image for '$key'. Set container-image to an image with cc and the runner's glibc, or set sandbox: cpt."
+    return 1
+  fi
+  printf '%s\n' "$image"
+}
+
 # cpt_token: a random hex token, for ::stop-commands::.
 cpt_token() {
   od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
   printf '\n'
+}
+
+# cpt_run_recorded <records file> <command>...: runs the command with its
+# stdout appended to the records file, and workflow commands turned off for
+# the rest of its output, which carries text from crates and their builds.
+cpt_run_recorded() {
+  local records="$1"
+  shift
+  local token status=0
+  token="$(cpt_token)"
+  printf '::stop-commands::%s\n' "$token"
+  "$@" >>"$records" || status=$?
+  printf '::%s::\n' "$token"
+  return "$status"
+}
+
+# cpt_has_prepared <records file>: whether check prepared any tool, so the
+# offline install has something to build. Needs jq.
+cpt_has_prepared() {
+  jq -e -R -s '[split("\n")[] | fromjson? // empty | objects | select(.version == 1 and .kind == "prepared")] | length > 0' "$1" >/dev/null
 }
 
 # cpt_annotate <working-directory> <records file>: one workflow command per

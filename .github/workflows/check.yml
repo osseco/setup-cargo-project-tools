@@ -50,11 +50,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-x64-jammy, os: ubuntu-22.04 }
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: macos-arm64, os: macos-latest }
           - { name: windows-x64, os: windows-latest }
-          - { name: linux-x64-musl, os: ubuntu-latest, container: "rust:1-alpine" }
+          # A job container has no Docker, so the build uses the project's
+          # own sandbox setting.
+          - { name: linux-x64-musl, os: ubuntu-latest, container: "rust:1-alpine", sandbox: cpt }
     defaults:
       run:
         shell: bash
@@ -75,6 +78,7 @@ jobs:
           working-directory: test/fixture
           audit: "true"
           cache: "false"
+          sandbox: ${{ matrix.sandbox || 'container' }}
       - name: Check outputs
         env:
           VERSION: ${{ steps.cpt.outputs.version }}
@@ -87,16 +91,23 @@ jobs:
           test "$CACHE_HIT" = "false"
           cargo project-tools --version | grep -F "$VERSION"
       # Without a cache hexyl is prepared by check and built by install. On
-      # macOS the action requires the sandbox, so it must be sandbox-exec.
+      # macOS the action requires the sandbox, so it must be sandbox-exec. On
+      # Linux runners it builds in the container with --sandbox off, so
+      # there is no sandbox-missing either.
       - name: Check records
         env:
           RECORDS: ${{ steps.cpt.outputs.records }}
+          SANDBOX: ${{ matrix.sandbox || 'container' }}
         run: |
           set -euo pipefail
           jq -e -s 'any(.kind == "prepared" and .tool == "hexyl")' "$RECORDS"
           jq -e -s 'any(.kind == "built" and .tool == "hexyl")' "$RECORDS"
           if [ "$RUNNER_OS" = "macOS" ]; then
             jq -e -s 'all(.[] | select(.kind == "built"); .sandbox == "sandbox-exec")' "$RECORDS"
+          fi
+          if [ "$RUNNER_OS" = "Linux" ] && [ "$SANDBOX" = "container" ]; then
+            jq -e -s 'all(.[] | select(.kind == "built"); .sandbox == "none")' "$RECORDS"
+            jq -e -s 'all(.[]; .kind != "sandbox-missing")' "$RECORDS"
           fi
       - name: Run a project tool from PATH
         run: echo hello | hexyl
@@ -230,6 +241,8 @@ jobs:
           - { name: an unsupported platform, os: macos-15-intel, cache: "false", audit: "false", workdir: . }
           - { name: an invalid input, os: ubuntu-latest, cache: "yes", audit: "false", workdir: . }
           - { name: a parent working-directory, os: ubuntu-latest, cache: "false", audit: "false", workdir: .. }
+          - { name: an invalid sandbox, os: ubuntu-latest, cache: "false", audit: "false", workdir: ., sandbox: bwrap }
+          - { name: an invalid container-image, os: ubuntu-latest, cache: "false", audit: "false", workdir: ., image: "x;id" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -242,6 +255,8 @@ jobs:
           audit: ${{ matrix.audit }}
           cache: ${{ matrix.cache }}
           working-directory: ${{ matrix.workdir }}
+          sandbox: ${{ matrix.sandbox || 'container' }}
+          container-image: ${{ matrix.image || '' }}
       - name: Expect failure
         env:
           OUTCOME: ${{ steps.cpt.outcome }}

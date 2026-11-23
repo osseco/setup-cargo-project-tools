@@ -7,10 +7,4 @@ set -euo pipefail
 # shellcheck source=src/lib.sh
 source "$GITHUB_ACTION_PATH/src/lib.sh"
 
-records="$(cpt_unix_path "$CPT_RECORDS")"
-token="$(cpt_token)"
-printf '::stop-commands::%s\n' "$token"
-status=0
-cargo project-tools "$@" --message-format json >>"$records" || status=$?
-printf '::%s::\n' "$token"
-exit "$status"
+cpt_run_recorded "$(cpt_unix_path "$CPT_RECORDS")" cargo project-tools "$@" --message-format json

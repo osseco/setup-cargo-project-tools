@@ -160,6 +160,47 @@ expect_out "sandbox left to the project on windows" "" cpt_sandbox_mode Windows
 if [[ "$(cpt_token)" =~ ^[0-9a-f]{32}$ ]]; then pass "token is 32 hex digits"; else fail "token shape"; fi
 if [[ "$(cpt_token)" != "$(cpt_token)" ]]; then pass "tokens differ"; else fail "tokens repeat"; fi
 
+: >"$tmp/run.jsonl"
+out="$(cpt_run_recorded "$tmp/run.jsonl" sh -c 'echo "{\"kind\":\"x\"}"; echo "::error::from a crate" >&2; exit 3' 2>&1)"
+status=$?
+if [[ "$status" == 3 ]]; then pass "run keeps the exit status"; else fail "run exit status: $status"; fi
+if [[ "$(cat "$tmp/run.jsonl")" == '{"kind":"x"}' ]]; then pass "run appends stdout to records"; else fail "run records"; fi
+if [[ "$out" =~ ^::stop-commands::([0-9a-f]{32})$'\n'::error::from\ a\ crate$'\n'::([0-9a-f]{32})::$ ]] &&
+  [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+  pass "run turns workflow commands off around the output"
+else
+  fail "run stop-commands: $out"
+fi
+
+# --- container
+expect_ok "image with tag and digest" cpt_check_image "buildpack-deps:noble@sha256:$a"
+expect_ok "image with registry and path" cpt_check_image ghcr.io/org/build-image:1.2
+expect_ok "image name only" cpt_check_image buildpack-deps
+expect_fail "image with shell characters" cpt_check_image 'x;id'
+expect_fail "image with option" cpt_check_image --privileged
+expect_fail "image with uppercase name" cpt_check_image Ubuntu:24.04
+expect_fail "image with short digest" cpt_check_image buildpack-deps@sha256:abc
+expect_fail "image with space" cpt_check_image 'a b'
+
+printf 'x:y img:1@sha256:%s\nubuntu:noble buildpack-deps:noble@sha256:%s\n' "$a" "$b" >"$tmp/images"
+printf 'NAME="Ubuntu"\nID=ubuntu\nVERSION_CODENAME=noble\n' >"$tmp/os-release"
+expect_out "image for ubuntu noble" "buildpack-deps:noble@sha256:$b" cpt_container_image "$tmp/os-release" "$tmp/images"
+printf 'ID="ubuntu"\nVERSION_CODENAME="noble"\n' >"$tmp/os-release"
+expect_out "image for quoted os-release" "buildpack-deps:noble@sha256:$b" cpt_container_image "$tmp/os-release" "$tmp/images"
+printf 'ID=ubuntu\nVERSION_CODENAME=focal\n' >"$tmp/os-release"
+expect_fail "no image for another release" cpt_container_image "$tmp/os-release" "$tmp/images"
+printf 'ID=alpine\n' >"$tmp/os-release"
+expect_fail "no image without a codename" cpt_container_image "$tmp/os-release" "$tmp/images"
+
+while read -r key image; do
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  if cpt_check_image "$image" 2>/dev/null && [[ "$image" == *@sha256:* ]]; then
+    pass "committed image for $key is pinned by digest"
+  else
+    fail "committed image for $key: '$image'"
+  fi
+done <"$ROOT/container-images"
+
 # --- annotations
 # expect_lines <label> <workdir> <want> <record>...: cpt_annotate on the
 # records prints exactly want.
@@ -225,6 +266,11 @@ if command -v jq >/dev/null 2>&1; then
       "::notice::Skipped 2 lines from cargo-project-tools that aren't version 1 JSON records." \
       "::notice::Skipped 1 cargo-project-tools records of kinds this action doesn't know.")" \
     '{"version":2,"kind":"advisory"}' 'not json' '{"version":1,"kind":"mystery"}'
+
+  printf '%s\n' 'not json' '{"version":1,"kind":"up-to-date","tool":"a"}' '{"version":1,"kind":"prepared","tool":"b"}' >"$tmp/records.jsonl"
+  expect_ok "prepared found among other records" cpt_has_prepared "$tmp/records.jsonl"
+  printf '%s\n' '{"version":1,"kind":"up-to-date","tool":"a"}' '{"version":2,"kind":"prepared"}' >"$tmp/records.jsonl"
+  expect_fail "nothing prepared" cpt_has_prepared "$tmp/records.jsonl"
 else
   printf 'skip annotations: jq is not on PATH\n'
 fi

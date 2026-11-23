@@ -35,6 +35,22 @@ inputs:
       Directory holding project-tools.toml, relative to the workspace.
     required: false
     default: "."
+  sandbox:
+    description: >-
+      Where the tools build. container (on Linux, in a Docker container with
+      no network, no capabilities and only the build output writable; macOS
+      always uses sandbox-exec, Windows has no sandbox) or cpt (the
+      project's own [build].sandbox, for job containers and runners without
+      Docker).
+    required: false
+    default: container
+  container-image:
+    description: >-
+      Image for sandbox: container. It needs cc and the runner's glibc.
+      Empty uses buildpack-deps for the runner's Ubuntu release, pinned by
+      digest in this action.
+    required: false
+    default: ""
 
 outputs:
   version:
@@ -68,6 +84,8 @@ runs:
         INPUT_AUDIT: ${{ inputs.audit }}
         INPUT_CACHE: ${{ inputs.cache }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_SANDBOX: ${{ inputs.sandbox }}
+        INPUT_CONTAINER_IMAGE: ${{ inputs.container-image }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: bash "$GITHUB_ACTION_PATH/src/resolve.sh"
 
@@ -170,11 +188,23 @@ runs:
         fi
         bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
 
+    # Linux with sandbox: container. Builds what check prepared, offline,
+    # in a locked-down container; skipped when check prepared nothing.
+    - name: Install tools in a container
+      if: inputs.install == 'true' && steps.resolve.outputs.container-image != ''
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+        CPT_PATH: ${{ steps.binary.outputs.path }}
+        CPT_CONTAINER_IMAGE: ${{ steps.resolve.outputs.container-image }}
+      run: bash "$GITHUB_ACTION_PATH/src/install-container.sh"
+
     # Runs on a cache hit too: install skips every tool whose stamp and
     # checksums in .project-tools/bin still match, and builds the rest from
     # what check prepared. check or the audit step already audited.
     - name: Install tools
-      if: inputs.install == 'true'
+      if: inputs.install == 'true' && steps.resolve.outputs.container-image == ''
       shell: bash
       working-directory: ${{ steps.resolve.outputs.working-directory }}
       env:

@@ -1,0 +1,7 @@
+# Default build image for sandbox: container, per runner distro release
+# (ID:VERSION_CODENAME from /etc/os-release). buildpack-deps brings cc and
+# libc headers; the same release as the runner means the same glibc as the
+# toolchain mounted into it and the runner that runs the binaries. Pinned by
+# multi-arch index digest. See CONTRIBUTING.md for updating them.
+ubuntu:jammy buildpack-deps:jammy@sha256:b7ada1fce26ea89df6080ac1903bdd2ca434fd46e72a19f48ea42f3c4f7f7dad
+ubuntu:noble buildpack-deps:noble@sha256:924bf5a2e44d8ad64669df739cc3a7d331dfb0a5b41815f0ca71a4819a503e8a
