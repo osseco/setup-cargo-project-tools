@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Step 1: validate the inputs, pick the release asset for this runner and
 # read its pinned sha256. Writes version, asset, sha256, working-directory,
-# cache (save, restore or off), week, sandbox (the --sandbox mode, or empty),
+# cache (save, restore or off), binary-cache (the same, for the
+# cargo-project-tools binary), binary-cache-file (where that cache keeps it),
+# week, sandbox (the --sandbox mode, or empty),
 # container-image (the image install runs in, or empty) and records (an empty
 # file for the JSON records) to GITHUB_OUTPUT.
 set -euo pipefail
@@ -12,6 +14,7 @@ source "$GITHUB_ACTION_PATH/src/lib.sh"
 cpt_check_choice install "$INPUT_INSTALL" true false
 cpt_check_choice audit "$INPUT_AUDIT" false true deny-warnings
 cpt_check_choice cache "$INPUT_CACHE" auto true restore false
+cpt_check_choice cache-binary "$INPUT_CACHE_BINARY" false true
 cpt_check_choice sandbox "$INPUT_SANDBOX" container cpt
 if [[ -n "$INPUT_CONTAINER_IMAGE" ]]; then
   cpt_check_image "$INPUT_CONTAINER_IMAGE"
@@ -62,6 +65,8 @@ records_dir="$(mktemp -d "$(cpt_unix_path "$RUNNER_TEMP")/cargo-project-tools.XX
   printf 'sha256=%s\n' "$sha256"
   printf 'working-directory=%s\n' "$workdir"
   printf 'cache=%s\n' "$cache"
+  printf 'binary-cache=%s\n' "$(cpt_binary_cache_mode "$INPUT_CACHE_BINARY" "$cache")"
+  printf 'binary-cache-file=%s\n' "$(cpt_native_path "$(cpt_unix_path "$RUNNER_TEMP")/cargo-project-tools-cache/$asset")"
   printf 'week=%s\n' "$(date -u +%G-%V)"
   printf 'sandbox=%s\n' "$sandbox"
   printf 'container-image=%s\n' "$container_image"

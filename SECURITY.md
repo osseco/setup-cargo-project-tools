@@ -17,6 +17,7 @@ Only the latest release gets fixes. Releases are immutable, so a fix always ship
 - `cargo-project-tools.version` and `cargo-project-tools.sha256` pin one cargo-project-tools version and the sha256 of every asset the action can install.
 - A maintainer pins a release with `scripts/update-cargo-project-tools.sh`. It refuses drafts and prereleases, downloads every asset, and requires four sources to agree: the sha256 it computes, the digest GitHub reports, the release's `SHA256SUMS`, and the build provenance attestation from cargo-project-tools' `release.yml`. With `cosign` available it checks the cosign bundle too.
 - At run time the action downloads only from `https://github.com/osseco/cargo-project-tools/releases/download/`, over https only (`curl --proto '=https'`), with no mirrors.
+- With `cache-binary: true` it can take the binary from the Actions cache instead. That copy gets the same check: it is used only when its sha256 matches the pin in this action, and is deleted and downloaded again when it doesn't. The key holds the pinned sha256, and only a download that matched the pin is saved.
 - Nothing is made executable, run or put on `PATH` until the hash matches the pinned one. On a mismatch the file is deleted and the step fails.
 - Checksums are never read from the place the binary comes from.
 
@@ -32,7 +33,7 @@ The tool binaries `cargo project-tools install` builds, their build directories 
 - Vendored sources, fetched previous versions and what `check` prepares for `install` are never cached: `check` fetches and verifies them against the locks in every run that builds.
 - `cache: false` for jobs whose output is released.
 
-cargo-project-tools itself is never cached; it is downloaded and checked against the pinned sha256 on every run.
+cargo-project-tools itself is cached only with `cache-binary: true`. Unlike the tool binaries, it needs no trust in the cache: whatever is restored must match the sha256 pinned in this action, which never comes from the cache, before it runs or goes on `PATH`.
 
 ## How cargo-project-tools updates are adopted
 

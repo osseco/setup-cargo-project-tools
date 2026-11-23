@@ -149,6 +149,17 @@ cpt_cache_mode() {
   esac
 }
 
+# cpt_binary_cache_mode <cache-binary input> <cache mode>: save, restore or
+# off for the cargo-project-tools binary. It follows the cache input's mode
+# when cache-binary is true.
+cpt_binary_cache_mode() {
+  if [[ "$1" == "true" ]]; then
+    printf '%s\n' "$2"
+  else
+    printf 'off\n'
+  fi
+}
+
 # cpt_native_path <path>: the path in the form GITHUB_PATH expects; Windows
 # paths on Windows runners, unchanged elsewhere.
 cpt_native_path() {

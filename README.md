@@ -5,7 +5,7 @@ A GitHub Action that installs [cargo-project-tools](https://github.com/osseco/ca
 This version of the action installs cargo-project-tools <!-- cargo-project-tools-version -->5.6.0<!-- /cargo-project-tools-version -->.
 
 - Each action version installs exactly one cargo-project-tools version. Its sha256 for every platform is pinned in [`cargo-project-tools.sha256`](cargo-project-tools.sha256), and the binary is checked against it before it runs.
-- Downloads come only from the cargo-project-tools GitHub releases. Nothing is built from source to get cargo-project-tools itself.
+- Downloads come only from the cargo-project-tools GitHub releases. Nothing is built from source to get cargo-project-tools itself. With `cache-binary: true` a copy can come from your Actions cache instead, checked against the same pinned sha256.
 - `cargo project-tools check` runs first: this runner against each tool's `targets`, the audit, and the [build review](https://osseco.github.io/cargo-project-tools/docs/build-review) of every build script and proc macro. Nothing is built until all of it passes.
 - The tools build in a sandbox: on Linux in a Docker container with no network, no capabilities and only the build output writable; on macOS in `sandbox-exec`. Windows has no sandbox.
 - `cargo project-tools install` runs with the tool binaries and builds in your repository's Actions cache, saved only from the default branch by default, and `.project-tools/bin` goes on `PATH`.
@@ -72,6 +72,7 @@ All inputs are optional.
 | `install`           | `true`  | `true`: run `cargo project-tools check`, then `install`, and put `.project-tools/bin` on `PATH`. `false`: only install cargo-project-tools.                          |
 | `audit`             | `false` | `false`: only the audit `check` runs. `true`: `cargo project-tools audit` before `check`, which then skips its own. `deny-warnings`: also fail on unmaintained, unsound, notice, yanked and git-source warnings. |
 | `cache`             | `auto`  | Tool binaries, tool builds and the advisory database in the Actions cache. `auto`: save on the default branch, restore elsewhere. `true`: restore, and save after a build or fetch, on any ref. `restore`: restore only. `false`: none. |
+| `cache-binary`      | `false` | `true`: also keep the cargo-project-tools binary in the Actions cache, saved and restored as `cache` says, so runs don't download it from GitHub releases. A restored copy is used only when it matches the pinned sha256; otherwise it is downloaded. `false`: download it every run. |
 | `working-directory` | `.`     | Directory holding `project-tools.toml`, relative to the workspace. No `..`, no absolute paths.                                                                      |
 | `sandbox`           | `container` | `container`: on Linux, build in a Docker container (see [How the tools are built](#how-the-tools-are-built)). `cpt`: build on the runner with the project's own `[build].sandbox`, for job containers and runners without Docker. macOS always requires `sandbox-exec`; Windows has none. |
 | `container-image`   | (empty) | Image for `sandbox: container`. It needs `cc` and the runner's glibc. Empty: `buildpack-deps` for the runner's Ubuntu release, pinned by digest in [`container-images`](container-images). A name without `@sha256:` gets a warning. |
@@ -87,6 +88,7 @@ Any other value fails the step.
 | `version`   | Installed cargo-project-tools version, for example `0.3.0`.                 |
 | `path`      | Absolute path to the `cargo-project-tools` binary.                          |
 | `cache-hit` | `true` when the tool binaries came from the Actions cache with an exact key. |
+| `binary-cache-hit` | `true` when the cargo-project-tools binary came from the Actions cache and matched the pinned sha256. |
 | `records`   | Path to a file with every [JSON record](https://osseco.github.io/cargo-project-tools/docs/commands#json-output) cargo-project-tools wrote in this step, one per line. Values in it come from locks, crates and the advisory database: check them before you use them. |
 
 ## How the tools are built
@@ -107,6 +109,7 @@ All cargo-project-tools output runs with workflow commands turned off (`::stop-c
 | Tool binaries    | `.project-tools/bin`, `.project-tools/.crates.toml`, `.crates2.json`   | OS, arch, cargo-project-tools version, `project-tools.toml` and everything in `.project-tools/crates` (locks, build reviews, overrides); falls back to the latest entry for the OS and arch. Restored for `install` and `audit`, saved only by `install`. |
 | Tool builds      | `.project-tools/targets`, except `*/vendor`, `*/previous` and `*/prepared.json` | Same key; falls back to the latest build for the OS and arch. Only used on a bin miss. |
 | Advisory database | `.project-tools/advisory-db`                                          | ISO week; falls back to an older week. Restored for `install` and `audit`.            |
+| cargo-project-tools | `RUNNER_TEMP/cargo-project-tools-cache/<asset>` (only with `cache-binary: true`) | Asset and pinned sha256, so a new pin never restores an old binary. Saved only after a download that matched the pin. |
 
 `cargo project-tools install` runs on a cache hit too. It keeps a stamp and a sha256 per tool in `.project-tools/bin`, skips every tool whose stamp and binaries still match, and rebuilds the rest. After a change to `project-tools.toml` or anything in `.project-tools/crates` the key misses, an older entry is restored, and only the tools that changed are rebuilt. `audit` keeps what each tool builds in `.project-tools/bin/.stamps`, so a restored bin cache also saves it downloads. Vendored sources are fetched again by `check` for every build, and what `check` prepares is only valid for that run, so neither is cached. cargo-project-tools revalidates the advisory database itself (one small request when it's older than a day). That check catches a corrupt or partial entry; it doesn't prove where the entry came from: see [SECURITY.md](SECURITY.md#the-actions-cache).
 
