@@ -1,4 +1,4 @@
-504e09fa69a7ca08885d9011f96203e22d63149dad73bdd91c60d60e1762e7c3  cargo-project-tools-x86_64-unknown-linux-musl
-5bc31f0b5949bd138bc0fc8b83731c501355bb04878f6a878f35fe599740ad2d  cargo-project-tools-aarch64-unknown-linux-musl
-04882abb9e4689e2ca4b85e2f17ddce75543286368329cc6e0f43d453a5ac625  cargo-project-tools-aarch64-apple-darwin
-b50e7a6fff4c2e1fabd1f315b64445f8877ec2662b288f7c2f44802b94fc4ed7  cargo-project-tools-x86_64-pc-windows-msvc.exe
+4dd65e16c2b1bb6b3065b01813519cd96d0308bd14995e88add3a5fdd6007ca5  cargo-project-tools-x86_64-unknown-linux-musl
+afd742c85a7739c7622a240399facfdf220a1068efc745a338417790a78ba05c  cargo-project-tools-aarch64-unknown-linux-musl
+8a8621594e265ee99a6fab32ac7603c3c41f3e3c30b5c83f4698678933e37c90  cargo-project-tools-aarch64-apple-darwin
+5f4e39ab528a1cfc40d52bc2dbf0276ea5995419bc7544e2f708ac5d7ab5cd0a  cargo-project-tools-x86_64-pc-windows-msvc.exe
