@@ -4,3 +4,4 @@
 /.advisory-db-*/
 /.crates.toml
 /.crates2.json
+/advisory-db.lock

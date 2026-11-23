@@ -3,9 +3,21 @@
 [settings]
 # Run network commands through sfw (Socket Firewall Free): "auto", "require" or "off".
 sfw = "auto"
+# The e2e runners in .github/workflows/check.yml.
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+]
 
 [build]
 profile = "release"
+
+# Windows has no build sandbox.
+[build.sandbox-os]
+windows = "off"
 
 [build.profile-settings]
 strip = "symbols"
