@@ -26,7 +26,7 @@ Conventions for commits, branches and sfw are in [AGENTS.md](AGENTS.md). This pa
 
 The e2e jobs in `check.yml` run the action against `test/fixture/` (one tool, `hexyl`, with a committed build review and `targets` for every e2e runner). They check the `records` output:
 
-- install and audit on Ubuntu 24.04 and 22.04 x64 and 24.04 arm64 (in the container), Alpine (`sandbox: cpt`), macOS arm64 (`sandbox-exec`) and Windows x64;
+- install and audit on Ubuntu latest (26.04), 24.04 and 22.04 x64 and 24.04 arm64 (in the container), Alpine (`sandbox: cpt`), macOS arm64 (`sandbox-exec`) and Windows x64;
 - a cache save, then a restore that only reports `up-to-date`;
 - `audit: deny-warnings` failing on the fixture's known warning;
 - `check` failing, before any build, without the build review and with the runner missing from `targets`;

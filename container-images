@@ -5,3 +5,4 @@
 # multi-arch index digest. See CONTRIBUTING.md for updating them.
 ubuntu:jammy buildpack-deps:jammy@sha256:b7ada1fce26ea89df6080ac1903bdd2ca434fd46e72a19f48ea42f3c4f7f7dad
 ubuntu:noble buildpack-deps:noble@sha256:924bf5a2e44d8ad64669df739cc3a7d331dfb0a5b41815f0ca71a4819a503e8a
+ubuntu:resolute buildpack-deps:resolute@sha256:194c70abaf37ac12f2aadca115308af03f90cbf60c1ffbd3afc4a7a451f65368

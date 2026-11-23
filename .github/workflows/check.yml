@@ -50,6 +50,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ubuntu-latest, so a new runner image without a pinned build image
+          # in container-images fails here first.
+          - { name: linux-x64-latest, os: ubuntu-latest }
           - { name: linux-x64, os: ubuntu-24.04 }
           - { name: linux-x64-jammy, os: ubuntu-22.04 }
           - { name: linux-arm64, os: ubuntu-24.04-arm }
