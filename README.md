@@ -2,7 +2,7 @@
 
 A GitHub Action that installs [cargo-project-tools](https://github.com/osseco/cargo-project-tools), builds your project's tools with it, and can audit their locks. It replaces the cache, install and `PATH` steps from the [cargo-project-tools CI guide](https://osseco.github.io/cargo-project-tools/docs/ci) with one step.
 
-This version of the action installs cargo-project-tools <!-- cargo-project-tools-version -->1.3.0<!-- /cargo-project-tools-version -->.
+This version of the action installs cargo-project-tools <!-- cargo-project-tools-version -->5.5.0<!-- /cargo-project-tools-version -->.
 
 - Each action version installs exactly one cargo-project-tools version. Its sha256 for every platform is pinned in [`cargo-project-tools.sha256`](cargo-project-tools.sha256), and the binary is checked against it before it runs.
 - Downloads come only from the cargo-project-tools GitHub releases. Nothing is built from source to get cargo-project-tools itself.
