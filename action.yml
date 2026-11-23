@@ -49,6 +49,13 @@ outputs:
       key, otherwise false. cargo project-tools install still checks them
       and rebuilds any that don't match.
     value: ${{ steps.bin-cache.outputs.cache-hit == 'true' }}
+  records:
+    description: >-
+      Path to a file with every JSON record cargo-project-tools wrote in this
+      step (audit, check, install), one per line. See the cargo-project-tools
+      JSON output docs. Values in it come from locks, crates and the advisory
+      database: check them before you use them.
+    value: ${{ steps.resolve.outputs.records }}
 
 runs:
   using: composite
@@ -122,37 +129,75 @@ runs:
         key: cpt-targets-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(format('{0}/project-tools.toml', steps.resolve.outputs.working-directory), format('{0}/.project-tools/crates/**', steps.resolve.outputs.working-directory)) }}
         restore-keys: cpt-targets-${{ runner.os }}-${{ runner.arch }}-
 
-    # Before install, so nothing is built from a lock that fails; install then
-    # skips its own audit.
+    # Before check, so nothing is built from a lock that fails; check then
+    # skips its own audit. Every cargo-project-tools run below appends its
+    # JSON records to the records output, and runs with workflow commands
+    # turned off (src/run-cpt.sh).
     - name: Audit tool locks
       if: inputs.audit != 'false'
       shell: bash
       working-directory: ${{ steps.resolve.outputs.working-directory }}
       env:
         INPUT_AUDIT: ${{ inputs.audit }}
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
       run: |
         set -euo pipefail
         args=(audit)
         if [[ "$INPUT_AUDIT" == "deny-warnings" ]]; then
           args+=(--deny-warnings)
         fi
-        cargo project-tools "${args[@]}"
+        bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
 
-    # Runs on a cache hit too: install skips every tool whose stamp and
-    # checksums in .project-tools/bin still match, and rebuilds the rest.
-    - name: Install tools
+    # Everything install checks before it builds, for every tool at once:
+    # this runner against targets, the audit, the build review and the
+    # sandbox. Builds nothing; prepares the tools that aren't up to date.
+    - name: Check tools
       if: inputs.install == 'true'
       shell: bash
       working-directory: ${{ steps.resolve.outputs.working-directory }}
       env:
         INPUT_AUDIT: ${{ inputs.audit }}
+        CPT_SANDBOX: ${{ steps.resolve.outputs.sandbox }}
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
       run: |
         set -euo pipefail
-        args=(install)
+        args=(check)
         if [[ "$INPUT_AUDIT" != "false" ]]; then
           args+=(--no-audit)
         fi
-        cargo project-tools "${args[@]}"
+        if [[ -n "$CPT_SANDBOX" ]]; then
+          args+=(--sandbox "$CPT_SANDBOX")
+        fi
+        bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
+
+    # Runs on a cache hit too: install skips every tool whose stamp and
+    # checksums in .project-tools/bin still match, and builds the rest from
+    # what check prepared. check or the audit step already audited.
+    - name: Install tools
+      if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.working-directory }}
+      env:
+        CPT_SANDBOX: ${{ steps.resolve.outputs.sandbox }}
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+      run: |
+        set -euo pipefail
+        args=(install --no-audit)
+        if [[ -n "$CPT_SANDBOX" ]]; then
+          args+=(--sandbox "$CPT_SANDBOX")
+        fi
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          echo "::notice::No build sandbox is available on Windows; tools build unsandboxed."
+        fi
+        bash "$GITHUB_ACTION_PATH/src/run-cpt.sh" "${args[@]}"
+
+    - name: Annotate findings
+      if: always() && steps.resolve.outputs.records != ''
+      shell: bash
+      env:
+        CPT_RECORDS: ${{ steps.resolve.outputs.records }}
+        CPT_WORKDIR: ${{ steps.resolve.outputs.working-directory }}
+      run: bash "$GITHUB_ACTION_PATH/src/annotate.sh"
 
     - name: Add tools to PATH
       if: inputs.install == 'true'

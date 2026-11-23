@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Step 1: validate the inputs, pick the release asset for this runner and
 # read its pinned sha256. Writes version, asset, sha256, working-directory,
-# cache (save, restore or off) and week to GITHUB_OUTPUT.
+# cache (save, restore or off), week, sandbox (the --sandbox mode, or empty)
+# and records (an empty file for the JSON records) to GITHUB_OUTPUT.
 set -euo pipefail
 
 # shellcheck source=src/lib.sh
@@ -27,6 +28,9 @@ if [[ "$INPUT_INSTALL" == "true" || "$INPUT_AUDIT" != "false" ]]; then
   fi
 fi
 
+records_dir="$(mktemp -d "$(cpt_unix_path "$RUNNER_TEMP")/cargo-project-tools.XXXXXX")"
+: >"$records_dir/records.jsonl"
+
 {
   printf 'version=%s\n' "$version"
   printf 'asset=%s\n' "$asset"
@@ -34,4 +38,6 @@ fi
   printf 'working-directory=%s\n' "$workdir"
   printf 'cache=%s\n' "$cache"
   printf 'week=%s\n' "$(date -u +%G-%V)"
+  printf 'sandbox=%s\n' "$(cpt_sandbox_mode "$RUNNER_OS")"
+  printf 'records=%s\n' "$(cpt_native_path "$records_dir/records.jsonl")"
 } >>"$GITHUB_OUTPUT"

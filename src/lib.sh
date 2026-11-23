@@ -6,6 +6,8 @@
 # shellcheck disable=SC2034 # used by the scripts that source this file
 readonly CPT_REPO_URL="https://github.com/osseco/cargo-project-tools"
 readonly CPT_SUPPORTED="Linux x64, Linux arm64, macOS arm64, Windows x64"
+CPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CPT_LIB_DIR
 
 cpt_error() {
   printf '::error::%s\n' "$*" >&2
@@ -164,4 +166,28 @@ cpt_unix_path() {
   else
     printf '%s\n' "$1"
   fi
+}
+
+# cpt_sandbox_mode <RUNNER_OS>: the --sandbox mode the action passes to check
+# and install, or nothing to leave it to the project's [build].sandbox.
+# macOS always has sandbox-exec, so a build there must use it.
+cpt_sandbox_mode() {
+  case "$1" in
+    macOS) printf 'require\n' ;;
+    *) ;;
+  esac
+}
+
+# cpt_token: a random hex token, for ::stop-commands::.
+cpt_token() {
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+  printf '\n'
+}
+
+# cpt_annotate <working-directory> <records file>: one workflow command per
+# finding in the JSON records cargo-project-tools wrote. Most values come
+# from locks, crates and the advisory database, so src/annotate.jq checks or
+# escapes every one of them. Needs jq.
+cpt_annotate() {
+  jq -rRs --arg workdir "$1" -f "$CPT_LIB_DIR/annotate.jq" "$2"
 }
