@@ -4,7 +4,7 @@ Conventions for commits, branches and sfw are in [AGENTS.md](AGENTS.md). This pa
 
 ## Setup
 
-- `bash`, [shellcheck](https://www.shellcheck.net/), `zizmor`, `actionlint` and [pre-commit](https://pre-commit.com/).
+- `bash`, [shellcheck](https://www.shellcheck.net/), `zizmor`, `actionlint`, [pre-commit](https://pre-commit.com/) and `jq` (the annotation tests are skipped without it).
 - For the update script: [`gh`](https://cli.github.com/) (signed in), `jq`, `curl`, and optionally `cosign`.
 - `pre-commit install`
 
@@ -24,7 +24,15 @@ Conventions for commits, branches and sfw are in [AGENTS.md](AGENTS.md). This pa
 | `cargo-project-tools-update.yml`             | on a cargo-project-tools release, and daily | opens a pull request that adopts a new cargo-project-tools release                                                    |
 | `codeql.yml`, `zizmor.yml`, `actionlint.yml` | also weekly                          | report findings to code scanning                                                                                             |
 
-The e2e jobs in `check.yml` run the action against `test/fixture/` (one tool, `hexyl`): install and audit on Linux x64, arm64 and Alpine, macOS arm64 and Windows x64; a cache save, then a restore that rebuilds nothing; `audit: deny-warnings` failing on the fixture's known warning; and rejections of an unsupported runner, an invalid input and a `..` working directory. While the pins are the `0.0.0` placeholder, the jobs that download cargo-project-tools are skipped.
+The e2e jobs in `check.yml` run the action against `test/fixture/` (one tool, `hexyl`, with a committed build review and `targets` for every e2e runner). They check the `records` output:
+
+- install and audit on Ubuntu 24.04 and 22.04 x64 and 24.04 arm64 (in the container), Alpine (`sandbox: cpt`), macOS arm64 (`sandbox-exec`) and Windows x64;
+- a cache save, then a restore that only reports `up-to-date`;
+- `audit: deny-warnings` failing on the fixture's known warning;
+- `check` failing, before any build, without the build review and with the runner missing from `targets`;
+- rejections of an unsupported runner, invalid inputs and a `..` working directory.
+
+While the pins are the `0.0.0` placeholder, the jobs that download cargo-project-tools are skipped. When a cargo-project-tools update changes what hexyl's build review covers, decide the new pieces in `test/fixture` with `cargo project-tools review hexyl` and commit `build-review.toml` with the update.
 
 ## Versions
 
@@ -44,7 +52,7 @@ The separator is `-`, not `+`: Dependabot can't parse `+`, so users pinned to a 
 A push to `main` that changes the action runs `release.yml`. When the version changed, the `publish` job (environment `release`):
 
 1. Refuses to publish while the pins are the `0.0.0` placeholder.
-2. Writes `SHA256SUMS` for `action.yml`, `src/*.sh`, `cargo-project-tools.version`, `cargo-project-tools.sha256` and `LICENSE`.
+2. Writes `SHA256SUMS` for `action.yml`, `src/*.sh`, `src/*.jq`, `cargo-project-tools.version`, `cargo-project-tools.sha256`, `container-images` and `LICENSE`.
 3. Attests build provenance for them.
 4. Creates a draft GitHub Release for the commit with those files, then publishes it. Releases are immutable, so a broken release is fixed by the next version.
 
@@ -61,7 +69,17 @@ The workflow:
    - writes `cargo-project-tools.version`, `cargo-project-tools.sha256` and the version marker in `README.md`, then runs `test/run.sh`.
 3. `.github/scripts/open-update-pr.sh` creates `feat/update_cargo_project_tools_X.Y.Z`, commits the three files through the GraphQL API with the update App's token (GitHub signs the commit as the App), and opens the pull request. It does nothing while one is open.
 
-A maintainer then reads the release notes (changes to `install`, `audit` or the `.project-tools/` layout the caches rely on), waits for the e2e jobs, merges and approves the release.
+A maintainer then reads the release notes (changes to `check`, `install`, `audit`, the JSON records the annotations read, or the `.project-tools/` layout the caches rely on), updates the fixture's build review if needed, waits for the e2e jobs, merges and approves the release.
+
+## Updating the build images
+
+`container-images` pins the default image for `sandbox: container` per Ubuntu release, by multi-arch index digest. To move to a newer image, or add a release when GitHub adds a runner image:
+
+```bash
+docker buildx imagetools inspect buildpack-deps:noble
+```
+
+Copy the `Digest:` of the index (not a platform's), check that it lists `linux/amd64` and `linux/arm64`, and update the line, `ubuntu:<codename> buildpack-deps:<codename>@sha256:<digest>`. `test/run.sh` checks every line is pinned. Commit it as `fix(action): update the build images`, so it releases.
 
 To adopt a release by hand, from a clean checkout:
 
