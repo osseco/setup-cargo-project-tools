@@ -287,6 +287,29 @@ expect_fail "version gt equal" cpt_version_gt 1.2.3 1.2.3
 expect_fail "version gt older" cpt_version_gt 1.2.3 1.3.0
 
 
+# --- build image helpers
+if command -v jq >/dev/null 2>&1; then
+  index='{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:'"$a"'","manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"unknown","architecture":"unknown"}},{"platform":{"os":"linux","architecture":"arm64","variant":"v8"}}]}'
+  printf '%s' "$index" >"$tmp/manifest.json"
+  expect_out "index digest" "sha256:$a" cpt_index_digest "$tmp/manifest.json"
+  printf '%s' "${index/application\/vnd.oci.image.index.v1+json/application\/vnd.docker.distribution.manifest.list.v2+json}" >"$tmp/manifest.json"
+  expect_out "manifest list digest" "sha256:$a" cpt_index_digest "$tmp/manifest.json"
+  printf '%s' "${index/\"arm64\"/\"ppc64le\"}" >"$tmp/manifest.json"
+  expect_fail "index without arm64" cpt_index_digest "$tmp/manifest.json"
+  printf '{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%s"}' "$a" >"$tmp/manifest.json"
+  expect_fail "single-platform manifest" cpt_index_digest "$tmp/manifest.json"
+  printf '%s' "${index/sha256:$a/sha256:abc}" >"$tmp/manifest.json"
+  expect_fail "index with a malformed digest" cpt_index_digest "$tmp/manifest.json"
+fi
+
+printf '# comment ubuntu:noble x\nubuntu:jammy old-jammy\nubuntu:noble old-noble\n' >"$tmp/images"
+expect_out "image keys skip comments" "$(printf 'ubuntu:jammy\nubuntu:noble')" cpt_image_keys "$tmp/images"
+cpt_set_image "$tmp/images" ubuntu:noble new-noble
+cpt_set_image "$tmp/images" ubuntu:resolute new-resolute
+expect_out "set image replaces and appends" \
+  "$(printf '# comment ubuntu:noble x\nubuntu:jammy old-jammy\nubuntu:noble new-noble\nubuntu:resolute new-resolute')" \
+  cat "$tmp/images"
+
 printf 'x <!-- cargo-project-tools-version -->0.1.0<!-- /cargo-project-tools-version --> y\n' >"$tmp/readme"
 cpt_set_readme_version "$tmp/readme" 0.2.0
 expect_out "readme marker rewritten" \

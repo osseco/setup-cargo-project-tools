@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Functions shared by the maintainer scripts that adopt a cargo-project-tools
-# release. Sourced, never run. No network access here.
+# release or new build images. Sourced, never run. No network access here.
 
 # cpt_version_gt <a> <b>: succeeds when X.Y.Z a is newer than b.
 cpt_version_gt() {
@@ -47,4 +47,37 @@ cpt_set_readme_version() {
     return 1
   }
   mv "$readme.tmp" "$readme"
+}
+
+# cpt_index_digest <manifest json>: the digest of a multi-arch image index,
+# from `docker buildx imagetools inspect --format '{{json .Manifest}}'`.
+# Fails unless it is an index with linux/amd64 and linux/arm64 images, the
+# runners the action supports.
+cpt_index_digest() {
+  jq -e -r '
+    select((.mediaType // "") | test("image\\.index|manifest\\.list"))
+    | select([.manifests[]?.platform | "\(.os)/\(.architecture)"]
+        | (index(["linux/amd64"]) != null) and (index(["linux/arm64"]) != null))
+    | .digest
+    | select(type == "string" and test("^sha256:[0-9a-f]{64}$"))' "$1"
+}
+
+# cpt_image_keys <images file>: the ID:codename of every pinned image.
+cpt_image_keys() {
+  awk '$0 !~ /^#/ && NF == 2 { print $1 }' "$1"
+}
+
+# cpt_set_image <images file> <ID:codename> <image>: pins the image for a
+# release, replacing its line or adding one at the end. Other lines,
+# comments included, stay as they are.
+cpt_set_image() {
+  local file="$1"
+  local key="$2"
+  local image="$3"
+  awk -v key="$key" -v image="$image" '
+    $0 !~ /^#/ && $1 == key { print key " " image; done = 1; next }
+    { print }
+    END { if (!done) print key " " image }
+  ' "$file" >"$file.tmp"
+  mv "$file.tmp" "$file"
 }

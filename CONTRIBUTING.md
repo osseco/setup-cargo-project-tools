@@ -22,6 +22,7 @@ Conventions for commits, branches and sfw are in [AGENTS.md](AGENTS.md). This pa
 | `check.yml`                                  | called by `pr.yml` and `release.yml` | shellcheck, unit tests, dependency review, CodeQL, zizmor, actionlint, and the action itself on every supported platform    |
 | `release.yml`                                | push to `main` touching the action   | the same checks, then publishes the release                                                                                  |
 | `cargo-project-tools-update.yml`             | on a cargo-project-tools release, and daily | opens a pull request that adopts a new cargo-project-tools release                                                    |
+| `container-images-update.yml`                | weekly                               | opens a pull request that pins the newest build images (see below)                                                          |
 | `codeql.yml`, `zizmor.yml`, `actionlint.yml` | also weekly                          | report findings to code scanning                                                                                             |
 
 The e2e jobs in `check.yml` run the action against `test/fixture/` (one tool, `hexyl`, with a committed build review and `targets` for every e2e runner). They check the `records` output:
@@ -71,16 +72,6 @@ The workflow:
 
 A maintainer then reads the release notes (changes to `check`, `install`, `audit`, the JSON records the annotations read, or the `.project-tools/` layout the caches rely on), updates the fixture's build review if needed, waits for the e2e jobs, merges and approves the release.
 
-## Updating the build images
-
-`container-images` pins the default image for `sandbox: container` per Ubuntu release, by multi-arch index digest. To move to a newer image, or add a release when GitHub adds a runner image:
-
-```bash
-docker buildx imagetools inspect buildpack-deps:noble
-```
-
-Copy the `Digest:` of the index (not a platform's), check that it lists `linux/amd64` and `linux/arm64`, and update the line, `ubuntu:<codename> buildpack-deps:<codename>@sha256:<digest>`. `test/run.sh` checks every line is pinned. Commit it as `fix(action): update the build images`, so it releases.
-
 To adopt a release by hand, from a clean checkout:
 
 ```bash
@@ -90,6 +81,23 @@ scripts/update-cargo-project-tools.sh X.Y.Z
 It does the same checks (cosign only when it's on `PATH`), creates the branch from `origin/main`, and stages the files without committing. `--dry-run` only checks and downloads: no git, no writes.
 
 `README.md` holds the version between `<!-- cargo-project-tools-version -->` markers; a test fails when it differs from `cargo-project-tools.version`. The exact `uses:` line (commit SHA and tag) is written into each release's notes by `release.yml`.
+
+## Updating the build images
+
+`container-images` pins the default image for `sandbox: container` per Ubuntu release (`ubuntu:<codename> buildpack-deps:<codename>@sha256:<digest>`), by multi-arch index digest. The action fails on a runner whose release has no line, so it has to keep up when GitHub moves `ubuntu-latest`.
+
+`container-images-update.yml` runs every Monday:
+
+1. `check` runs `scripts/update-container-images.sh` with the release of its own `ubuntu-latest` runner. For that release and every one already in the file, the script reads the multi-arch index of `buildpack-deps:<codename>` from Docker Hub, requires linux/amd64 and linux/arm64 images in it, pins the index digest, and runs `test/run.sh`.
+2. When the file changed, `pull-request` (environment `update`, the same App as the cargo-project-tools update) does the same and `.github/scripts/open-images-pr.sh` opens `fix(action): update the build images` from `fix/update_container_images`, with the diff in the description. It does nothing while one is open.
+
+A maintainer waits for the e2e jobs, which include `ubuntu-latest`, merges and approves the release. To do it by hand, or for a release no runner has yet:
+
+```bash
+scripts/update-container-images.sh ubuntu:<codename>
+```
+
+It needs Docker with buildx and `jq`, writes `container-images` and never touches git. Commit it as `fix(action): update the build images`, so it releases.
 
 ## Verifying a release
 
