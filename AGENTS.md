@@ -64,7 +64,7 @@ Unit tests are plain bash in `test/run.sh` and must not touch the network. Logic
 ## Security rules
 
 - Never put a binary on `PATH` or run it before it has matched the sha256 in `cargo-project-tools.sha256`.
-- Download only from `https://github.com/osseco/cargo-project-tools/releases/download/`. No mirrors, no other hosts.
+- Download only from `https://github.com/osseco/cargo-project-tools/releases/download/`. No mirrors, no other hosts. The one other source is the Actions cache with `cache-binary: true`, and its copy gets the same sha256 check as a download.
 - Never take a checksum from the same place as the binary at run time.
 - No new actions in `action.yml` without the maintainer's agreement; pin them by full SHA. Container images are pinned by digest too.
 - Never pass `--auto-approve`, `--approve-target` or `review --approve`/`--from` in the action or its workflows. Build-time code is decided by people, where they work.

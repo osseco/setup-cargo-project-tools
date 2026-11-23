@@ -152,6 +152,10 @@ expect_out "cache auto restores on pull request" restore cpt_cache_mode auto ref
 expect_out "cache auto restores on tag named like branch" restore cpt_cache_mode auto refs/tags/main main
 expect_out "cache auto restores without default branch" restore cpt_cache_mode auto refs/heads/main ""
 expect_fail "cache unknown mode" cpt_cache_mode yes refs/heads/main main
+expect_out "binary cache off by default" off cpt_binary_cache_mode false save
+expect_out "binary cache follows save" save cpt_binary_cache_mode true save
+expect_out "binary cache follows restore" restore cpt_binary_cache_mode true restore
+expect_out "binary cache off with cache false" off cpt_binary_cache_mode true off
 
 # --- sandbox and stop-commands
 expect_out "sandbox required on macos" require cpt_sandbox_mode macOS

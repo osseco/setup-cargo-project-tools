@@ -87,11 +87,13 @@ jobs:
           VERSION: ${{ steps.cpt.outputs.version }}
           CPT_PATH: ${{ steps.cpt.outputs.path }}
           CACHE_HIT: ${{ steps.cpt.outputs.cache-hit }}
+          BINARY_CACHE_HIT: ${{ steps.cpt.outputs.binary-cache-hit }}
         run: |
           set -euo pipefail
           test "$VERSION" = "$(head -n 1 cargo-project-tools.version)"
           test -f "$CPT_PATH"
           test "$CACHE_HIT" = "false"
+          test "$BINARY_CACHE_HIT" = "false"
           cargo project-tools --version | grep -F "$VERSION"
       # Without a cache hexyl is prepared by check and built by install. On
       # macOS the action requires the sandbox, so it must be sandbox-exec. On
@@ -132,6 +134,7 @@ jobs:
           working-directory: test/fixture
           audit: "true"
           cache: "true"
+          cache-binary: "true"
       - run: echo hello | hexyl
 
   e2e-cache-restore:
@@ -150,13 +153,16 @@ jobs:
           working-directory: test/fixture
           audit: "true"
           cache: restore
-      - name: Expect a cache hit without a rebuild
+          cache-binary: "true"
+      - name: Expect a cache hit without a rebuild or a download
         env:
           CACHE_HIT: ${{ steps.cpt.outputs.cache-hit }}
+          BINARY_CACHE_HIT: ${{ steps.cpt.outputs.binary-cache-hit }}
           RECORDS: ${{ steps.cpt.outputs.records }}
         run: |
           set -euo pipefail
           test "$CACHE_HIT" = "true"
+          test "$BINARY_CACHE_HIT" = "true"
           jq -e -s 'any(.kind == "up-to-date" and .tool == "hexyl")' "$RECORDS"
           jq -e -s 'all(.[]; .kind != "prepared" and .kind != "built")' "$RECORDS"
       - run: echo hello | hexyl
