@@ -1,0 +1,81 @@
+name: container-images update
+
+# Opens a pull request that pins the newest buildpack-deps image for every
+# Ubuntu release in container-images, and for the release behind
+# ubuntu-latest. The action fails on a runner whose release has no pinned
+# image, so this has to keep up when GitHub moves ubuntu-latest. Dependabot
+# doesn't read container-images.
+#
+# Uses the same GitHub App and update environment as
+# cargo-project-tools-update.yml, for the same reasons: pull requests opened
+# with GITHUB_TOKEN don't trigger check.yml, and the App's commit is signed by
+# GitHub. A maintainer still reviews and merges.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: container-images-update
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Look for newer images
+        id: check
+        run: |
+          set -euo pipefail
+          release="$(. /etc/os-release && printf '%s:%s' "$ID" "$VERSION_CODENAME")"
+          bash scripts/update-container-images.sh "$release"
+          printf 'release=%s\n' "$release" >>"$GITHUB_OUTPUT"
+          if git diff --quiet -- container-images; then
+            echo "container-images is current"
+          else
+            git diff -- container-images
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+  pull-request:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # Holds the App's private key; deployment branches limited to main.
+    environment: update
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pin the newest images
+        env:
+          RELEASE: ${{ needs.check.outputs.release }}
+        run: bash scripts/update-container-images.sh "$RELEASE"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ vars.UPDATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.UPDATE_APP_PRIVATE_KEY }}
+          # No owner or repositories: the token is scoped to this repository.
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.sha }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: bash .github/scripts/open-images-pr.sh

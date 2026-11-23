@@ -58,7 +58,10 @@ Unit tests are plain bash in `test/run.sh` and must not touch the network. Logic
 - `src/annotate.sh`, `src/annotate.jq`: turn the records into annotations, checking and escaping every value.
 - `scripts/release-lib.sh`: version comparison, README marker.
 - `scripts/update-cargo-project-tools.sh X.Y.Z`: adopts a release. By hand it creates a branch and stages the result; with `--ci` it only writes the files. Agents may run it only when asked, and never commit what it stages.
-- `.github/scripts/check-cargo-project-tools.sh`, `.github/scripts/open-update-pr.sh`: the update workflow's check, and its signed commit and pull request.
+- `scripts/update-container-images.sh [ubuntu:<codename>…]`: pins the newest `buildpack-deps` digests in `container-images`. Writes the file only; never touches git.
+- `.github/scripts/check-cargo-project-tools.sh`, `.github/scripts/open-update-pr.sh`: the cargo-project-tools update workflow's check, and its pull request.
+- `.github/scripts/open-images-pr.sh`: the `container-images-update.yml` pull request.
+- `.github/scripts/pull-request-lib.sh`: `cpt_open_signed_pr`, the signed commit (through the GraphQL API, as the update App) and pull request both update workflows open.
 - `test/run.sh`: unit tests. `test/fixture/`: a minimal cargo project with one tool (`hexyl`) for the e2e jobs.
 
 ## Security rules

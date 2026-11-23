@@ -45,6 +45,7 @@ cargo-project-tools itself is never cached; it is downloaded and checked against
 
 - The action uses only `actions/cache/restore` and `actions/cache/save`, pinned by full commit SHA. It installs nothing but cargo-project-tools. A new action needs a maintainer's agreement.
 - On Linux the tools build in an official `buildpack-deps` image for the runner's Ubuntu release, pinned by multi-arch index digest in `container-images`. A `container-image` input replaces it; one without a digest gets a warning.
+- `container-images-update.yml` checks for newer digests weekly and for the release behind `ubuntu-latest`, and opens a pull request with the same App, environment and limits as the cargo-project-tools update. The digests come from Docker Hub over https; the images are Docker Official Images. Nothing merges without a maintainer and the e2e jobs on every Ubuntu runner.
 - Dependabot updates actions weekly, with a 7-day cooldown.
 
 ## Workflows
